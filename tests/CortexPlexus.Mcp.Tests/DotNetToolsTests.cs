@@ -19,17 +19,15 @@ public class DotNetToolsTests
     [Fact]
     public async Task GetDiRegistrations_WithRepositoryParameter_FiltersByFilePathContains()
     {
-        // Mục đích: Khi repository được truyền, kết quả phải chỉ giữ items có FilePath
-        // chứa tên repo (case-insensitive).
+        // Mục đích (GH #3): repository được truyền → tool resolve repoId và truyền XUỐNG
+        // query layer (scoping bằng repo_id), KHÔNG post-filter FilePath theo tên repo nữa.
         var repoId = Guid.NewGuid();
         var graphStore = Substitute.For<IGraphStore>();
 
-        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("DI:MyApp.IFooService", "AddScoped<IFooService>", "di_registration",
-                    "services.AddScoped", "/workspace/myapp/Startup.cs", 10, 1.0, "Graph:DI"),
-                new("DI:OtherApp.IBarService", "AddSingleton<IBarService>", "di_registration",
-                    "services.AddSingleton", "/workspace/OTHERAPP/Program.cs", 20, 1.0, "Graph:DI"),
+                    "services.AddScoped", "src/Startup.cs", 10, 1.0, "Graph:DI"),
             ]));
 
         var compressor = TestHelpers.BuildCompressor();
@@ -38,9 +36,66 @@ public class DotNetToolsTests
 
         var result = await DotNetTools.GetDiRegistrations(null, "myapp", graphStore, compressor, repoStore);
 
-        // Chỉ giữ item có FilePath chứa "myapp" (case-insensitive).
         Assert.Contains("IFooService", result);
-        Assert.DoesNotContain("IBarService", result);
+        // The resolved repoId is handed to the query (no fragile FilePath-substring filter).
+        // Note relative path "src/Startup.cs" never contains "myapp" — old code returned empty.
+        await graphStore.Received(1).QueryDiRegistrationsAsync(null, repoId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetDiRegistrations_NoRepositoryMultiRepo_ReturnsGuardAndSkipsQuery()
+    {
+        // GH #3 token-trap: omitting repository with >1 repo indexed must NOT dump all repos.
+        var graphStore = Substitute.For<IGraphStore>();
+        var compressor = TestHelpers.BuildCompressor();
+        var repoStore = TestHelpers.BuildRepoStore(
+            TestHelpers.MakeRepo("RepoA", Guid.NewGuid(), "/ws/a"),
+            TestHelpers.MakeRepo("RepoB", Guid.NewGuid(), "/ws/b"));
+
+        var result = await DotNetTools.GetDiRegistrations(null, null, graphStore, compressor, repoStore);
+
+        Assert.Contains("repositories are indexed", result);
+        Assert.Contains("RepoA", result);
+        Assert.Contains("RepoB", result);
+        await graphStore.DidNotReceive().QueryDiRegistrationsAsync(
+            Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetDiRegistrations_UnknownRepository_ReturnsNotFound()
+    {
+        var graphStore = Substitute.For<IGraphStore>();
+        var compressor = TestHelpers.BuildCompressor();
+        var repoStore = TestHelpers.BuildRepoStore(
+            TestHelpers.MakeRepo("RepoA", Guid.NewGuid(), "/ws/a"));
+
+        var result = await DotNetTools.GetDiRegistrations(null, "nope", graphStore, compressor, repoStore);
+
+        Assert.Contains("not found", result);
+        await graphStore.DidNotReceive().QueryDiRegistrationsAsync(
+            Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetDiRegistrations_ServiceTypeFilterNoRepo_QueriesAllReposUnscoped()
+    {
+        // A content filter (serviceType) keeps the result bounded, so the cross-repo
+        // exact lookup must still work without forcing repository: (no guard).
+        var graphStore = Substitute.For<IGraphStore>();
+        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
+                new("DI:X.IWebPushSender", "AddScoped<IWebPushSender>", "di_registration",
+                    "services.AddScoped", "src/Program.cs", 61, 1.0, "Graph:DI"),
+            ]));
+        var compressor = TestHelpers.BuildCompressor();
+        var repoStore = TestHelpers.BuildRepoStore(
+            TestHelpers.MakeRepo("RepoA", Guid.NewGuid(), "/ws/a"),
+            TestHelpers.MakeRepo("RepoB", Guid.NewGuid(), "/ws/b"));
+
+        var result = await DotNetTools.GetDiRegistrations("WebPushSender", null, graphStore, compressor, repoStore);
+
+        Assert.Contains("IWebPushSender", result);
+        await graphStore.Received(1).QueryDiRegistrationsAsync("WebPushSender", null, Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -48,7 +103,7 @@ public class DotNetToolsTests
     {
         // Mục đích: Empty result → message guide AI index trước.
         var graphStore = Substitute.For<IGraphStore>();
-        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([]));
 
         var compressor = TestHelpers.BuildCompressor();
@@ -66,7 +121,7 @@ public class DotNetToolsTests
     {
         // Mục đích: Format output phải có signature + file:line để AI navigate source.
         var graphStore = Substitute.For<IGraphStore>();
-        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("API:GET:/api/users", "GetUsers", "api_endpoint",
                     "GET /api/users", "/workspace/UserController.cs", 42, 1.0, "Graph:Endpoints"),
@@ -126,7 +181,7 @@ public class DotNetToolsTests
         // 1. "Config Keys" (kind="config_key")
         // 2. "Code Reading This Config" (kind khác)
         var graphStore = Substitute.For<IGraphStore>();
-        graphStore.QueryConfigUsageAsync("DATABASE_URL", Arg.Any<CancellationToken>())
+        graphStore.QueryConfigUsageAsync("DATABASE_URL", Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("config:DATABASE_URL", "DATABASE_URL", "config_key",
                     null, "/repo/.env", 1, 1.0, "Graph:Config"),
@@ -159,7 +214,7 @@ public class DotNetToolsTests
         var repoId = Guid.NewGuid();
         var graphStore = Substitute.For<IGraphStore>();
 
-        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("DI:IFooService", "AddScoped", "di_registration", null,
                     "/workspace/src/CortexPlexus.App/Program.cs", 10, 1.0, "Graph:DI"),
@@ -167,10 +222,10 @@ public class DotNetToolsTests
                     "/workspace/src/CortexPlexus.Graph/Startup.cs", 20, 1.0, "Graph:DI"),
             ]));
 
-        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([]));
 
-        graphStore.QueryEntityMappingsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryEntityMappingsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([]));
 
         var repoStore = TestHelpers.BuildRepoStore(TestHelpers.MakeRepo("test-repo", repoId));
@@ -184,56 +239,38 @@ public class DotNetToolsTests
         Assert.Contains("CortexPlexus.Graph", result);
     }
 
-    // === Bug fix: GetArchitecture must scope DI/Endpoints/Entities by repository ===
+    // === GH #3: GetArchitecture scopes every sub-query by the resolved repoId ===
     [Fact]
-    public async Task GetArchitecture_WithRepositoryParameter_FiltersDiEndpointsEntities()
+    public async Task GetArchitecture_WithRepository_ScopesSubQueriesByRepoId()
     {
-        // Mục đích: Issue #1 từ smoke test — GetArchitecture trộn data giữa repos khi
-        // user truyền `repository` parameter. DI/Endpoints/Entities phải được filter
-        // theo FilePath (cùng pattern như GetDiRegistrations).
-        var repoId = Guid.NewGuid();
+        // Scoping is delegated to the query layer (repo_id), not post-filtered by FilePath.
+        // Mocks return already-scoped data; we assert each sub-query got the resolved repoId.
+        var cfId = Guid.NewGuid();
         var graphStore = Substitute.For<IGraphStore>();
 
-        // Mix data từ 2 repos
-        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("DI:CortexFlow.IService", "AddScoped", "di_registration", null,
                     "/workspace/cortexflow/Startup.cs", 10, 1.0, "Graph:DI"),
-                new("DI:CortexPlexus.Other", "AddSingleton", "di_registration", null,
-                    "/workspace/cortexplexus/Program.cs", 20, 1.0, "Graph:DI"),
             ]));
-
-        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
-                new("API:GET:/api/cortexflow", "GetCF", "api_endpoint", "GET /api/cortexflow",
-                    "/workspace/cortexflow/Controllers/Foo.cs", 1, 1.0, "Graph:Endpoints"),
-                new("API:GET:/api/other", "GetOther", "api_endpoint", "GET /api/other",
-                    "/workspace/cortexplexus/Bar.cs", 1, 1.0, "Graph:Endpoints"),
-            ]));
-
-        graphStore.QueryEntityMappingsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
-                new("CortexFlow.Models.Agent", "Agent", "class", null,
-                    "/workspace/cortexflow/Models/Agent.cs", 1, 1.0, "Graph:Entity"),
-                new("CortexPlexus.Models.Repo", "Repo", "class", null,
-                    "/workspace/cortexplexus/Models/Repo.cs", 1, 1.0, "Graph:Entity"),
-            ]));
+        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([]));
+        graphStore.QueryEntityMappingsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([]));
 
         var repoStore = TestHelpers.BuildRepoStore(
-            TestHelpers.MakeRepo("CortexFlow", repoId, "/workspace/cortexflow"),
+            TestHelpers.MakeRepo("CortexFlow", cfId, "/workspace/cortexflow"),
             TestHelpers.MakeRepo("CortexPlexus", Guid.NewGuid(), "/workspace/cortexplexus"));
 
         var result = await DotNetTools.GetArchitecture("CortexFlow", graphStore, repoStore);
 
-        // CortexFlow items phải xuất hiện
+        // Header lists only the scoped repo; scoped DI item shows.
+        Assert.Contains("Repositories (1)", result);
         Assert.Contains("CortexFlow.IService", result);
-        Assert.Contains("/api/cortexflow", result);
-        Assert.Contains("CortexFlow.Models.Agent", result);
-
-        // CortexPlexus items KHÔNG được xuất hiện (đã filter)
-        Assert.DoesNotContain("CortexPlexus.Other", result);
-        Assert.DoesNotContain("/api/other", result);
-        Assert.DoesNotContain("CortexPlexus.Models.Repo", result);
+        // Every sub-query received the resolved CortexFlow repoId.
+        await graphStore.Received(1).QueryDiRegistrationsAsync(Arg.Any<string?>(), cfId, Arg.Any<CancellationToken>());
+        await graphStore.Received(1).QueryApiEndpointsAsync(Arg.Any<string?>(), cfId, Arg.Any<CancellationToken>());
+        await graphStore.Received(1).QueryEntityMappingsAsync(Arg.Any<string?>(), cfId, Arg.Any<CancellationToken>());
     }
 
     // === #48: GetMiddlewarePipeline_SortedByOrder ===

@@ -202,19 +202,19 @@ public class AiAgentUxTests
         var repoId = Guid.NewGuid();
         var graphStore = Substitute.For<IGraphStore>();
 
-        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("DI:IFoo", "AddScoped", "di_registration", null,
                     "/workspace/test-repo/Startup.cs", 1, 1.0, "DI"),
             ]));
 
-        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("API:GET:/api/foo", "GetFoo", "api_endpoint", "GET /api/foo",
                     "/workspace/test-repo/FooController.cs", 1, 1.0, "API"),
             ]));
 
-        graphStore.QueryEntityMappingsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryEntityMappingsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("App.Models.Foo", "Foo", "class", null,
                     "/workspace/test-repo/Models/Foo.cs", 1, 1.0, "Entity"),

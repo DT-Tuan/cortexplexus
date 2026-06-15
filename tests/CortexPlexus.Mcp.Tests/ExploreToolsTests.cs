@@ -256,19 +256,19 @@ public class ExploreToolsTests
         var repoId = Guid.NewGuid();
         var graphStore = Substitute.For<IGraphStore>();
 
-        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryDiRegistrationsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("DI:IFooService", "AddScoped", "di_registration", null,
                     "/workspace/test-repo/Startup.cs", 10, 1.0, "Graph:DI"),
             ]));
 
-        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryApiEndpointsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("API:GET:/api/foo", "GetFoo", "api_endpoint", "GET /api/foo",
                     "/workspace/test-repo/Controllers/FooController.cs", 15, 1.0, "Graph:Endpoints"),
             ]));
 
-        graphStore.QueryEntityMappingsAsync(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        graphStore.QueryEntityMappingsAsync(Arg.Any<string?>(), Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([
                 new("App.Models.User", "User", "class", null,
                     "/workspace/test-repo/Models/User.cs", 5, 1.0, "Graph:EntityMapping"),

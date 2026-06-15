@@ -16,16 +16,16 @@ public interface IGraphStore
     Task DeleteByRepoAsync(Guid repoId, CancellationToken ct = default);
 
     // Phase 3: .NET Deep Analysis queries
-    Task<IReadOnlyList<SearchResult>> QueryDiRegistrationsAsync(string? serviceTypeFqn = null, CancellationToken ct = default);
-    Task<IReadOnlyList<SearchResult>> QueryEntityMappingsAsync(string? entityName = null, CancellationToken ct = default);
-    Task<IReadOnlyList<SearchResult>> QueryApiEndpointsAsync(string? moduleName = null, CancellationToken ct = default);
+    Task<IReadOnlyList<SearchResult>> QueryDiRegistrationsAsync(string? serviceTypeFqn = null, Guid? repoId = null, CancellationToken ct = default);
+    Task<IReadOnlyList<SearchResult>> QueryEntityMappingsAsync(string? entityName = null, Guid? repoId = null, CancellationToken ct = default);
+    Task<IReadOnlyList<SearchResult>> QueryApiEndpointsAsync(string? moduleName = null, Guid? repoId = null, CancellationToken ct = default);
     Task<IReadOnlyList<SearchResult>> QueryDataFlowAsync(string endpointRoute, CancellationToken ct = default);
 
     // P1a: Test-to-Code mapping
     Task<IReadOnlyList<SearchResult>> QueryTestCoverageAsync(string methodFqn, CancellationToken ct = default);
 
     // P1b: Configuration Mapping
-    Task<IReadOnlyList<SearchResult>> QueryConfigUsageAsync(string? configKey = null, CancellationToken ct = default);
+    Task<IReadOnlyList<SearchResult>> QueryConfigUsageAsync(string? configKey = null, Guid? repoId = null, CancellationToken ct = default);
 
     // P2d: Dead Code Detection
     Task<IReadOnlyList<SearchResult>> QueryDeadCodeAsync(Guid repoId, CancellationToken ct = default);

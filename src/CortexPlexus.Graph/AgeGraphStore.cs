@@ -677,20 +677,24 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
     // --- Phase 3: .NET Deep Analysis queries ---
 
     public async Task<IReadOnlyList<SearchResult>> QueryDiRegistrationsAsync(
-        string? serviceTypeFqn = null, CancellationToken ct = default)
+        string? serviceTypeFqn = null, Guid? repoId = null, CancellationToken ct = default)
     {
-        var cypher = serviceTypeFqn is not null
-            ? "MATCH (reg:di_registration)" +
-              $" WHERE reg.fqn CONTAINS '{EscapeCypher(serviceTypeFqn)}'" +
-              " RETURN reg.fqn, reg.name, reg.file_path, reg.start_line, reg.signature"
-            : "MATCH (reg:di_registration)" +
-              " RETURN reg.fqn, reg.name, reg.file_path, reg.start_line, reg.signature";
+        var preds = new List<string>();
+        if (repoId is { } rid) preds.Add($"reg.repo_id = '{rid}'");
+        if (serviceTypeFqn is not null) preds.Add($"reg.fqn CONTAINS '{EscapeCypher(serviceTypeFqn)}'");
+        var cypher = "MATCH (reg:di_registration)" + WhereClause(preds) +
+            " RETURN reg.fqn, reg.name, reg.file_path, reg.start_line, reg.signature";
 
         return await ExecuteCypherQuery(cypher, "Graph:DI", ct);
     }
 
+    // Joins zero or more Cypher predicates into a " WHERE a AND b" suffix (empty if none).
+    // Used to add optional repo_id scoping alongside the existing name/fqn filters.
+    private static string WhereClause(IReadOnlyList<string> predicates) =>
+        predicates.Count == 0 ? "" : " WHERE " + string.Join(" AND ", predicates);
+
     public async Task<IReadOnlyList<SearchResult>> QueryEntityMappingsAsync(
-        string? entityName = null, CancellationToken ct = default)
+        string? entityName = null, Guid? repoId = null, CancellationToken ct = default)
     {
         // Query entities via MapsTo (DbSet properties) OR Configures (IEntityTypeConfiguration)
         // AGE doesn't support | in relationship types, so run both and merge
@@ -699,12 +703,11 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
 
         foreach (var relType in new[] { "MapsTo", "Configures" })
         {
-            var cypher = entityName is not null
-                ? $"MATCH ()-[:{relType}]->(entity)" +
-                  $" WHERE entity.name CONTAINS '{EscapeCypher(entityName)}'" +
-                  " RETURN entity.fqn, entity.name, entity.file_path, entity.start_line, entity.signature"
-                : $"MATCH ()-[:{relType}]->(entity)" +
-                  " RETURN entity.fqn, entity.name, entity.file_path, entity.start_line, entity.signature";
+            var preds = new List<string>();
+            if (repoId is { } rid) preds.Add($"entity.repo_id = '{rid}'");
+            if (entityName is not null) preds.Add($"entity.name CONTAINS '{EscapeCypher(entityName)}'");
+            var cypher = $"MATCH ()-[:{relType}]->(entity)" + WhereClause(preds) +
+                " RETURN entity.fqn, entity.name, entity.file_path, entity.start_line, entity.signature";
 
             var results = await ExecuteCypherQuery(cypher, "Graph:EntityMapping", ct);
             foreach (var r in results)
@@ -718,7 +721,7 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
     }
 
     public async Task<IReadOnlyList<SearchResult>> QueryApiEndpointsAsync(
-        string? moduleName = null, CancellationToken ct = default)
+        string? moduleName = null, Guid? repoId = null, CancellationToken ct = default)
     {
         // Issue #A (R16): moduleName filter must match against file_path (or signature),
         // NOT fqn. FQN của API endpoint là "API:POST:api/Chat/completion" — KHÔNG chứa
@@ -731,8 +734,10 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
         // No filter → still use graph (backward compatible).
         if (moduleName is null)
         {
+            var preds = new List<string>();
+            if (repoId is { } rid) preds.Add($"ep.repo_id = '{rid}'");
             var cypher =
-                "MATCH (ep:api_endpoint)" +
+                "MATCH (ep:api_endpoint)" + WhereClause(preds) +
                 " RETURN ep.fqn, ep.name, ep.file_path, ep.start_line, ep.signature";
             return await ExecuteCypherQuery(cypher, "Graph:Endpoints", ct);
         }
@@ -749,10 +754,11 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
         // \ChatController.cs and /ChatController.cs but NOT \MyChatController.cs.
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
+        var repoSql = repoId is not null ? " AND repo_id = @repoId" : "";
+        cmd.CommandText = $"""
             SELECT fqn, name, kind, signature, file_path, start_line
             FROM public.code_symbols
-            WHERE kind = 'api_endpoint'
+            WHERE kind = 'api_endpoint'{repoSql}
               AND (
                    POSITION(LOWER(@controllerWin)  IN LOWER(file_path)) > 0
                 OR POSITION(LOWER(@controllerUnix) IN LOWER(file_path)) > 0
@@ -762,6 +768,7 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
             ORDER BY name
             LIMIT 500
             """;
+        if (repoId is { } endpointRepoId) cmd.Parameters.AddWithValue("repoId", endpointRepoId);
         cmd.Parameters.AddWithValue("controllerWin",  $"\\{moduleName}Controller.cs");
         cmd.Parameters.AddWithValue("controllerUnix", $"/{moduleName}Controller.cs");
         cmd.Parameters.AddWithValue("folderWin",      $"\\{moduleName}\\");
@@ -885,7 +892,7 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
     // --- P1b: Configuration Mapping ---
 
     public async Task<IReadOnlyList<SearchResult>> QueryConfigUsageAsync(
-        string? configKey = null, CancellationToken ct = default)
+        string? configKey = null, Guid? repoId = null, CancellationToken ct = default)
     {
         // Query both directions:
         // 1. "Who reads this config key?" — MATCH (reader)-[:ReadsConfig]->(config) WHERE config.fqn CONTAINS key
@@ -895,12 +902,11 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
         var seen = new HashSet<string>();
 
         // Query 1: Config key nodes (config_key symbols)
-        var configCypher = configKey is not null
-            ? "MATCH (ck:config_key)" +
-              $" WHERE ck.fqn CONTAINS '{EscapeCypher(configKey)}'" +
-              " RETURN ck.fqn, ck.name, ck.file_path, ck.start_line, ck.signature"
-            : "MATCH (ck:config_key)" +
-              " RETURN ck.fqn, ck.name, ck.file_path, ck.start_line, ck.signature";
+        var ckPreds = new List<string>();
+        if (repoId is { } cfgRid) ckPreds.Add($"ck.repo_id = '{cfgRid}'");
+        if (configKey is not null) ckPreds.Add($"ck.fqn CONTAINS '{EscapeCypher(configKey)}'");
+        var configCypher = "MATCH (ck:config_key)" + WhereClause(ckPreds) +
+            " RETURN ck.fqn, ck.name, ck.file_path, ck.start_line, ck.signature";
 
         var configResults = await ExecuteCypherQuery(configCypher, "Graph:Config", ct);
         foreach (var r in configResults)
@@ -912,9 +918,10 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
         // Query 2: Code symbols that read the config key via ReadsConfig edges
         if (configKey is not null)
         {
+            var readerPreds = new List<string> { $"target.fqn CONTAINS '{EscapeCypher(configKey)}'" };
+            if (repoId is { } readerRid) readerPreds.Add($"reader.repo_id = '{readerRid}'");
             var readerCypher =
-                "MATCH (reader)-[:ReadsConfig]->(target)" +
-                $" WHERE target.fqn CONTAINS '{EscapeCypher(configKey)}'" +
+                "MATCH (reader)-[:ReadsConfig]->(target)" + WhereClause(readerPreds) +
                 " RETURN reader.fqn, reader.name, reader.file_path, reader.start_line, reader.signature";
 
             var readerResults = await ExecuteCypherQuery(readerCypher, "Graph:ConfigReader", ct);

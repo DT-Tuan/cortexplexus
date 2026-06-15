@@ -10,6 +10,38 @@ namespace CortexPlexus.App.Mcp.Tools;
 [McpServerToolType]
 public sealed class DotNetTools
 {
+    /// <summary>
+    /// Resolves the repository scope for a DotNet tool, returning a guard message the caller
+    /// must return verbatim when scoping can't proceed safely:
+    /// <list type="bullet">
+    /// <item>a repository name was given but doesn't resolve → "not found";</item>
+    /// <item>repository omitted, NO content filter, and &gt;1 repo indexed → require it (this is the
+    /// cross-repo token-dump trap, GH #3).</item>
+    /// </list>
+    /// Otherwise <c>RepoId</c> is the scope (null only when 0 repos indexed, or when a content
+    /// filter is present and no repo was given — a bounded cross-repo lookup that stays useful).
+    /// </summary>
+    private static async Task<(Guid? RepoId, string? Guard)> ResolveScopeAsync(
+        string? repository, bool hasContentFilter, IRepositoryStore repoStore, string noun)
+    {
+        if (repository is not null)
+        {
+            var id = await RepoResolver.ResolveAsync(repository, repoStore);
+            return id is null
+                ? (null, $"Repository '{repository}' not found. Call list_repositories for valid names.")
+                : (id, null);
+        }
+
+        var repos = await repoStore.ListAsync();
+        if (!hasContentFilter && repos.Count > 1)
+            return (null,
+                $"{repos.Count} repositories are indexed ({string.Join(", ", repos.Select(r => r.Name))}). " +
+                $"Pass repository:\"<name>\" to scope {noun} — omitting it returns every repo and is token-heavy.");
+
+        // 0 repos → null (queries return empty anyway). 1 repo → scope to it implicitly.
+        return (repos.Count == 1 ? repos[0].Id : (Guid?)null, null);
+    }
+
     [McpServerTool, Description("Get DI container service registrations (AddScoped, AddTransient, AddSingleton)")]
     public static async Task<string> GetDiRegistrations(
         [Description("Filter by service type name (optional)")] string? serviceType = null,
@@ -18,15 +50,9 @@ public sealed class DotNetTools
         ContextCompressor compressor = default!,
         IRepositoryStore repoStore = default!)
     {
-        var results = await graphStore.QueryDiRegistrationsAsync(serviceType);
-
-        // Filter by repo if specified
-        if (repository is not null)
-        {
-            var repoId = await RepoResolver.ResolveAsync(repository, repoStore);
-            if (repoId is not null)
-                results = results.Where(r => r.FilePath?.Contains(repository, StringComparison.OrdinalIgnoreCase) == true).ToList();
-        }
+        var (repoId, guard) = await ResolveScopeAsync(repository, serviceType is not null, repoStore, "DI registrations");
+        if (guard is not null) return guard;
+        var results = await graphStore.QueryDiRegistrationsAsync(serviceType, repoId);
 
         if (results.Count == 0)
             return serviceType is not null
@@ -47,14 +73,9 @@ public sealed class DotNetTools
         ContextCompressor compressor = default!,
         IRepositoryStore repoStore = default!)
     {
-        var results = await graphStore.QueryEntityMappingsAsync(entityName);
-
-        if (repository is not null)
-        {
-            var repoId = await RepoResolver.ResolveAsync(repository, repoStore);
-            if (repoId is not null)
-                results = results.Where(r => r.FilePath?.Contains(repository, StringComparison.OrdinalIgnoreCase) == true).ToList();
-        }
+        var (repoId, guard) = await ResolveScopeAsync(repository, entityName is not null, repoStore, "entity mappings");
+        if (guard is not null) return guard;
+        var results = await graphStore.QueryEntityMappingsAsync(entityName, repoId);
 
         if (results.Count == 0)
             return entityName is not null
@@ -75,14 +96,9 @@ public sealed class DotNetTools
         ContextCompressor compressor = default!,
         IRepositoryStore repoStore = default!)
     {
-        var results = await graphStore.QueryApiEndpointsAsync(moduleName);
-
-        if (repository is not null)
-        {
-            var repoId = await RepoResolver.ResolveAsync(repository, repoStore);
-            if (repoId is not null)
-                results = results.Where(r => r.FilePath?.Contains(repository, StringComparison.OrdinalIgnoreCase) == true).ToList();
-        }
+        var (repoId, guard) = await ResolveScopeAsync(repository, moduleName is not null, repoStore, "API endpoints");
+        if (guard is not null) return guard;
+        var results = await graphStore.QueryApiEndpointsAsync(moduleName, repoId);
 
         if (results.Count == 0)
             return moduleName is not null
@@ -133,14 +149,9 @@ public sealed class DotNetTools
         ContextCompressor compressor = default!,
         IRepositoryStore repoStore = default!)
     {
-        var results = await graphStore.QueryConfigUsageAsync(configKey);
-
-        if (repository is not null)
-        {
-            var repoId = await RepoResolver.ResolveAsync(repository, repoStore);
-            if (repoId is not null)
-                results = results.Where(r => r.FilePath?.Contains(repository, StringComparison.OrdinalIgnoreCase) == true).ToList();
-        }
+        var (repoId, guard) = await ResolveScopeAsync(repository, configKey is not null, repoStore, "config usage");
+        if (guard is not null) return guard;
+        var results = await graphStore.QueryConfigUsageAsync(configKey, repoId);
 
         if (results.Count == 0)
             return configKey is not null
@@ -221,32 +232,23 @@ public sealed class DotNetTools
         IGraphStore graphStore = default!,
         IRepositoryStore repoStore = default!)
     {
-        var repos = await repoStore.ListAsync();
+        var (repoId, guard) = await ResolveScopeAsync(repository, hasContentFilter: false, repoStore, "the architecture overview");
+        if (guard is not null) return guard;
+
+        var allRepos = await repoStore.ListAsync();
+        var repos = repoId is { } rid ? allRepos.Where(r => r.Id == rid).ToList() : allRepos;
+
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("Architecture Overview:");
         sb.AppendLine();
-
-        if (repository is not null)
-        {
-            repos = repos.Where(r =>
-                r.Name.Contains(repository, StringComparison.OrdinalIgnoreCase) ||
-                r.Path.Contains(repository, StringComparison.OrdinalIgnoreCase)).ToList();
-        }
 
         sb.AppendLine($"Repositories ({repos.Count}):");
         foreach (var repo in repos)
             sb.AppendLine($"  - {repo.Name} (indexed: {repo.LastIndexed?.ToString("yyyy-MM-dd HH:mm") ?? "never"})");
         sb.AppendLine();
 
-        // Helper: filter results by repository name (matched against FilePath).
-        // Same pattern as GetDiRegistrations/GetApiEndpoints để consistent.
-        IReadOnlyList<SearchResult> FilterByRepo(IReadOnlyList<SearchResult> results) =>
-            repository is null
-                ? results
-                : results.Where(r => r.FilePath?.Contains(repository, StringComparison.OrdinalIgnoreCase) == true).ToList();
-
         // DI Registrations — grouped by module
-        var diRegs = FilterByRepo(await graphStore.QueryDiRegistrationsAsync());
+        var diRegs = await graphStore.QueryDiRegistrationsAsync(repoId: repoId);
         if (diRegs.Count > 0)
         {
             sb.AppendLine($"DI Registrations ({diRegs.Count}):");
@@ -261,7 +263,7 @@ public sealed class DotNetTools
         }
 
         // API Endpoints — with routes
-        var endpoints = FilterByRepo(await graphStore.QueryApiEndpointsAsync());
+        var endpoints = await graphStore.QueryApiEndpointsAsync(repoId: repoId);
         if (endpoints.Count > 0)
         {
             sb.AppendLine($"API Endpoints ({endpoints.Count}):");
@@ -271,7 +273,7 @@ public sealed class DotNetTools
         }
 
         // EF Core Entities
-        var entities = FilterByRepo(await graphStore.QueryEntityMappingsAsync());
+        var entities = await graphStore.QueryEntityMappingsAsync(repoId: repoId);
         if (entities.Count > 0)
         {
             sb.AppendLine($"EF Core Entities ({entities.Count}):");
@@ -292,9 +294,11 @@ public sealed class DotNetTools
         IRepositoryStore repoStore = default!)
     {
         // Query middleware nodes from graph (kind = "middleware")
-        var repos = await repoStore.ListAsync();
-        if (repository is not null)
-            repos = repos.Where(r => r.Name.Contains(repository, StringComparison.OrdinalIgnoreCase)).ToList();
+        var (repoId, guard) = await ResolveScopeAsync(repository, hasContentFilter: false, repoStore, "the middleware pipeline");
+        if (guard is not null) return guard;
+
+        var allRepos = await repoStore.ListAsync();
+        var repos = repoId is { } rid ? allRepos.Where(r => r.Id == rid).ToList() : allRepos;
 
         if (repos.Count == 0)
             return "No repositories found. Index a project first.";
