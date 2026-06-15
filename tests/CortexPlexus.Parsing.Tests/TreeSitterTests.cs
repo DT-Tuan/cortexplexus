@@ -195,6 +195,87 @@ public sealed class PythonExtractorTests
         Assert.NotNull(method);
     }
 
+    [Fact]
+    public void ResolvesSelfCallToContainingClass()
+    {
+        var (_, relationships) = ParsePython("""
+            class Service:
+                def process(self):
+                    self.helper()
+
+                def helper(self):
+                    pass
+            """);
+
+        Assert.Contains(relationships, r =>
+            r.Type == RelationshipType.Calls
+            && r.FromFqn == "test.Service.process"
+            && r.ToFqn == "test.Service.helper");
+    }
+
+    [Fact]
+    public void ResolvesFromImportToModuleQualifiedFqn()
+    {
+        var (_, relationships) = ParsePython("""
+            from core.intel.scoring import score_item
+
+            def run():
+                score_item()
+            """);
+
+        Assert.Contains(relationships, r =>
+            r.Type == RelationshipType.Calls
+            && r.FromFqn == "test.run"
+            && r.ToFqn == "core.intel.scoring.score_item");
+    }
+
+    [Fact]
+    public void ResolvesAliasedImportCall()
+    {
+        var (_, relationships) = ParsePython("""
+            import core.engine.tts as tts
+
+            def run():
+                tts.synthesize()
+            """);
+
+        Assert.Contains(relationships, r =>
+            r.Type == RelationshipType.Calls
+            && r.ToFqn == "core.engine.tts.synthesize");
+    }
+
+    [Fact]
+    public void ResolvesModuleLevelDefCall()
+    {
+        var (_, relationships) = ParsePython("""
+            def helper():
+                pass
+
+            def main():
+                helper()
+            """);
+
+        Assert.Contains(relationships, r =>
+            r.Type == RelationshipType.Calls
+            && r.FromFqn == "test.main"
+            && r.ToFqn == "test.helper");
+    }
+
+    [Fact]
+    public void LeavesUnknownCalleeVerbatim()
+    {
+        // Builtins / dynamic dispatch must NOT be guessed into false module edges.
+        var (_, relationships) = ParsePython("""
+            def main():
+                print("hi")
+            """);
+
+        Assert.Contains(relationships, r =>
+            r.Type == RelationshipType.Calls && r.ToFqn == "print");
+        Assert.DoesNotContain(relationships, r =>
+            r.Type == RelationshipType.Calls && r.ToFqn == "test.print");
+    }
+
     private static (List<CodeSymbol>, List<Relationship>) ParsePython(string code)
     {
         var lang = new global::TreeSitter.Language("python");

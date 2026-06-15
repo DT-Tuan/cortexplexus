@@ -58,6 +58,41 @@ public sealed class IgnorePatternMatcherTests
         }
     }
 
+    [Fact]
+    public void LoadFromDirectory_StripsTrailingSlash_SoDirPatternMatches()
+    {
+        // Gitignore convention writes directories as "files_hive/". The trailing
+        // slash must be stripped on load, otherwise the pattern lands in the
+        // path-prefix branch and fails a doubled-slash startsWith check.
+        var tempDir = Path.Combine(Path.GetTempPath(), $"cp-ignore-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(tempDir, ".cortexplexusignore"), """
+                files_hive/
+                docs/legacy/
+                """);
+
+            var patterns = IgnorePatternMatcher.LoadFromDirectory(tempDir);
+            Assert.Contains("files_hive", patterns);
+            Assert.Contains("docs/legacy", patterns);
+            Assert.DoesNotContain(patterns, p => p.EndsWith('/'));
+
+            Assert.True(IgnorePatternMatcher.Matches(
+                $"{tempDir}/files_hive/recorder.py", tempDir, patterns));
+            Assert.True(IgnorePatternMatcher.Matches(
+                $"{tempDir}/files_hive/hive-doc/core/intel/agent.py", tempDir, patterns));
+            Assert.True(IgnorePatternMatcher.Matches(
+                $"{tempDir}/docs/legacy/old.md", tempDir, patterns));
+            Assert.False(IgnorePatternMatcher.Matches(
+                $"{tempDir}/core/intel/agent.py", tempDir, patterns));
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
     [Theory]
     // Plain dirname matches anywhere in path
     [InlineData("/repo/claw-code-main/rust/lib.rs", "claw-code-main", true)]

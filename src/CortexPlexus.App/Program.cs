@@ -111,7 +111,24 @@ async Task RunServe(string[] args)
     builder.Services.AddHostedService<IndexingWorker>();
 
     // MCP Server
-    builder.Services.AddMcpServer()
+    builder.Services.AddMcpServer(options =>
+        {
+            // Sent to every client on initialize. Counters the ".NET-only" first
+            // impression: the code graph is multi-language, so agents in Python/TS/Go
+            // repos should USE the graph tools instead of falling back to grep.
+            options.ServerInstructions =
+                "CortexPlexus is a MULTI-LANGUAGE code-intelligence graph + semantic search, " +
+                "not .NET-only. Languages: C# (Roslyn, deepest), and Python, TypeScript, " +
+                "JavaScript, Java, Go, Rust, PHP (tree-sitter). For ANY indexed repo in these " +
+                "languages, prefer the graph/semantic tools over manual grep for structural " +
+                "questions: search_code (exact name), semantic_search (concept), get_callers / " +
+                "get_callees / get_impact_analysis (relationships). ALWAYS pass repository:\"<name>\" " +
+                "(see list_repositories) to scope. Note: the deep .NET-specific tools " +
+                "(get_di_registrations, get_entity_mapping, get_api_endpoints, get_middleware_pipeline, " +
+                "nuget audit) only return results for C#/.NET repos. A shared cross-project memory " +
+                "store (recall_memory / save_memory, scope:\"all\") spans every indexed repo regardless " +
+                "of language. Call get_help once for the full tool list and language support matrix.";
+        })
         .WithHttpTransport()
         .WithToolsFromAssembly(typeof(Program).Assembly);
 

@@ -46,6 +46,12 @@ public static class IgnorePatternMatcher
                 var trimmed = raw.Trim();
                 if (string.IsNullOrEmpty(trimmed)) continue;
                 if (trimmed.StartsWith('#')) continue;
+                // Gitignore conventionally marks directories with a trailing slash
+                // (e.g. "files_hive/"). Strip it so the pattern lands in the
+                // dirname/prefix branches of Matches() instead of failing a
+                // "startsWith(pattern + '/')" check on a doubled slash.
+                trimmed = trimmed.TrimEnd('/');
+                if (trimmed.Length == 0) continue;
                 patterns.Add(trimmed);
             }
             return patterns;
