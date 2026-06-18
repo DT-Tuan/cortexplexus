@@ -949,13 +949,23 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
         // are invoked by the test runner via reflection — not by other C# code — so they
         // have no incoming Calls edges. Before this fix every test method showed up as
         // dead code on CortexFlow. Same root pattern as R21 #6 (HTTP endpoints).
+        // Candidate surface — language-aware:
+        //  • .NET (Roslyn): public/internal METHODS. Private members are excluded on
+        //    purpose (reachable only within their type → noise).
+        //  • Tree-sitter langs (Python/TS/JS/Go/Rust/…): top-level FUNCTIONS and class
+        //    METHODS. They carry no access modifier, so accessibility is NULL (Python/Go)
+        //    or 'export' (TS). Include those, and use the leading-underscore "private"
+        //    convention (Python/JS) as the noise filter instead — this also drops Python
+        //    dunders like __init__. (A C# method literally named `_x` is rare and treated
+        //    as intentionally-special; acceptable trade-off.)
         var methodsSql = """
             SELECT fqn, name, kind, signature, file_path, start_line
             FROM public.code_symbols
             WHERE repo_id = @repoId
-              AND kind = 'method'
-              AND (accessibility = 'public' OR accessibility = 'internal')
+              AND kind IN ('method', 'function')
+              AND (accessibility IN ('public', 'internal', 'export') OR accessibility IS NULL)
               AND COALESCE(is_test_method, FALSE) = FALSE
+              AND LEFT(name, 1) <> '_'
             ORDER BY name
             LIMIT 500
             """;

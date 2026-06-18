@@ -48,8 +48,48 @@ internal sealed class PythonExtractor
     public (List<CodeSymbol> Symbols, List<Relationship> Relationships) Extract(global::TreeSitter.Node root)
     {
         BuildNameResolution(root);
+        EmitModuleSymbol(root);
+        DetectModuleScopeRelationships(root);
         WalkNode(root, containingClass: null, callerScope: _modulePath);
         return (_symbols, _relationships);
+    }
+
+    /// <summary>
+    /// Emit a vertex for the module itself so module-scope edges (imports,
+    /// module-level <c>ReadsConfig</c>) have a real endpoint with a file location.
+    /// "module" is not an embeddable kind (see <see cref="Core.EmbeddableKinds"/>),
+    /// mirroring how Roslyn emits a "namespace" symbol.
+    /// </summary>
+    private void EmitModuleSymbol(global::TreeSitter.Node root)
+    {
+        _symbols.Add(new NamespaceInfo
+        {
+            Fqn = _modulePath,
+            Name = LastSegment(_modulePath),
+            Kind = "module",
+            FilePath = _filePath,
+            StartLine = 1,
+            EndLine = (int)root.EndPosition.Row + 1,
+        });
+    }
+
+    /// <summary>
+    /// Scan module-scope (top-level) statements for config/http/event access,
+    /// attributed to the module FQN. Function/class definitions are skipped here —
+    /// their bodies are scanned by <see cref="ExtractFunction"/>/<see cref="ExtractClass"/>,
+    /// so attributing them again to the module would double-count (GH #6).
+    /// </summary>
+    private void DetectModuleScopeRelationships(global::TreeSitter.Node root)
+    {
+        foreach (var child in root.Children)
+        {
+            if (child.Type is "function_definition" or "class_definition" or "decorated_definition")
+                continue;
+
+            _relationships.AddRange(ConfigAccessDetector.DetectPython(child, _modulePath));
+            _relationships.AddRange(HttpCallDetector.DetectPython(child, _modulePath));
+            _relationships.AddRange(EventPatternDetector.DetectPython(child, _modulePath));
+        }
     }
 
     /// <summary>

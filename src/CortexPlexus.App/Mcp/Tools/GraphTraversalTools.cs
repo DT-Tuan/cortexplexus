@@ -340,8 +340,9 @@ public sealed class GraphTraversalTools
     }
 
     [McpServerTool, Description(
-        "Find potentially dead code: public/internal methods with no callers. " +
-        "Returns methods that are never called by other code — candidates for cleanup.")]
+        "Find potentially dead code: functions/methods with no callers — candidates for cleanup. " +
+        "Works across languages: .NET public/internal methods, plus Python/TS/JS/Go/… top-level " +
+        "functions and class methods (leading-underscore 'private' names are skipped as noise).")]
     public static async Task<string> GetDeadCode(
         [Description("Repository name to scan for dead code")] string repository,
         IGraphStore graphStore = default!,

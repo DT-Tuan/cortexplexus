@@ -101,6 +101,31 @@ public sealed class TypeScriptExtractorTests
         Assert.NotEmpty(calls);
     }
 
+    [Fact]
+    public void ExtractsModuleLevelConfigRead()
+    {
+        // GH #6 (TS side): top-level process.env reads were never scanned —
+        // ConfigAccessDetector only ran on function/method/arrow bodies.
+        var (_, relationships) = ParseTypeScript("""
+            const port = process.env.PORT;
+            """);
+
+        Assert.Contains(relationships, r =>
+            r.Type == RelationshipType.ReadsConfig
+            && r.FromFqn == "test.ts"
+            && r.ToFqn == "env:PORT");
+    }
+
+    [Fact]
+    public void EmitsModuleSymbol()
+    {
+        var (symbols, _) = ParseTypeScript("const x = 1;");
+
+        var module = symbols.FirstOrDefault(s => s.Kind == "module");
+        Assert.NotNull(module);
+        Assert.Equal("test.ts", module.Fqn);
+    }
+
     private static (List<CodeSymbol>, List<Relationship>) ParseTypeScript(string code)
     {
         var lang = new global::TreeSitter.Language("typescript");
@@ -274,6 +299,64 @@ public sealed class PythonExtractorTests
             r.Type == RelationshipType.Calls && r.ToFqn == "print");
         Assert.DoesNotContain(relationships, r =>
             r.Type == RelationshipType.Calls && r.ToFqn == "test.print");
+    }
+
+    [Fact]
+    public void ExtractsModuleLevelConfigRead()
+    {
+        // GH #6: module-level os.environ reads (e.g. Alembic env.py) were never
+        // scanned — ConfigAccessDetector only ran on class/function bodies.
+        var (_, relationships) = ParsePython("""
+            import os
+            db_url = os.environ.get("DATABASE_URL")
+            """);
+
+        Assert.Contains(relationships, r =>
+            r.Type == RelationshipType.ReadsConfig
+            && r.FromFqn == "test"
+            && r.ToFqn == "env:DATABASE_URL");
+    }
+
+    [Fact]
+    public void ExtractsModuleLevelConfigReadUnderTopLevelGuard()
+    {
+        // Mirrors Alembic env.py:20-24 — read at module scope guarded by a top-level if.
+        var (_, relationships) = ParsePython("""
+            import os
+            url = os.environ.get("DATABASE_URL")
+            if url:
+                token = os.environ["API_TOKEN"]
+            """);
+
+        Assert.Contains(relationships, r =>
+            r.Type == RelationshipType.ReadsConfig && r.ToFqn == "env:API_TOKEN" && r.FromFqn == "test");
+    }
+
+    [Fact]
+    public void EmitsModuleSymbol()
+    {
+        var (symbols, _) = ParsePython("x = 1\n");
+
+        var module = symbols.FirstOrDefault(s => s.Kind == "module");
+        Assert.NotNull(module);
+        Assert.Equal("test", module.Fqn);
+    }
+
+    [Fact]
+    public void InFunctionConfigReadAttributedToFunctionNotModule()
+    {
+        // A read inside a function must attribute to the function, not double-count to the module.
+        var (_, relationships) = ParsePython("""
+            import os
+            def load():
+                return os.getenv("API_TOKEN")
+            """);
+
+        var reads = relationships
+            .Where(r => r.Type == RelationshipType.ReadsConfig && r.ToFqn == "env:API_TOKEN")
+            .ToList();
+        Assert.Single(reads);
+        Assert.Equal("test.load", reads[0].FromFqn);
     }
 
     private static (List<CodeSymbol>, List<Relationship>) ParsePython(string code)

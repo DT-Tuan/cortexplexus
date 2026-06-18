@@ -231,6 +231,42 @@ public class AgeGraphStoreIntegrationTests : IAsyncLifetime
         Assert.Contains(deadCode, r => r.Name == "Unused");
     }
 
+    // === Multi-language: tree-sitter symbols (function kind, no access modifier) ===
+    [Fact]
+    public async Task QueryDeadCode_DetectsTreeSitterFunctionsWithoutAccessModifier()
+    {
+        // Python/TS functions have kind='function' and NULL accessibility (or 'export'
+        // for TS). The original filter (kind='method' AND accessibility IN public/internal)
+        // excluded ALL of them → dead-code was empty for non-.NET repos. Now they are
+        // candidates, with leading-underscore as the "private" noise filter.
+        var repoId = await _fixture.SeedRepositoryAsync(_dataSource);
+
+        // Python: a used function (has a caller), an unused one, a private helper.
+        await SeedCodeSymbolAsync(_dataSource, "app.svc.used_fn", "used_fn", "function", repoId, accessibility: null);
+        await SeedCodeSymbolAsync(_dataSource, "app.svc.unused_fn", "unused_fn", "function", repoId, accessibility: null);
+        await SeedCodeSymbolAsync(_dataSource, "app.svc._private_helper", "_private_helper", "function", repoId, accessibility: null);
+        // TS: an exported but unused function.
+        await SeedCodeSymbolAsync(_dataSource, "app/svc.ts::orphanExport", "orphanExport", "function", repoId, accessibility: "export");
+
+        // Graph nodes + a single Calls edge into used_fn.
+        await _store.UpsertNodesAsync(new CodeSymbol[]
+        {
+            new MethodInfo { Fqn = "app.svc.caller", Name = "caller", Kind = "function", RepoId = repoId, Signature = "caller()" },
+            new MethodInfo { Fqn = "app.svc.used_fn", Name = "used_fn", Kind = "function", RepoId = repoId, Signature = "used_fn()" },
+        });
+        await _store.UpsertEdgesAsync(new[]
+        {
+            new Relationship("app.svc.caller", "app.svc.used_fn", RelationshipType.Calls),
+        });
+
+        var deadCode = await _store.QueryDeadCodeAsync(repoId);
+
+        Assert.Contains(deadCode, r => r.Name == "unused_fn");      // function, no caller → dead
+        Assert.Contains(deadCode, r => r.Name == "orphanExport");   // exported TS, no caller → dead
+        Assert.DoesNotContain(deadCode, r => r.Name == "used_fn");  // has incoming Calls → not dead
+        Assert.DoesNotContain(deadCode, r => r.Name == "_private_helper"); // underscore → filtered as private
+    }
+
     // === R21 Fix #6: HTTP endpoint methods should be excluded from dead code ===
     [Fact]
     public async Task QueryDeadCode_ExcludesMethodsWithHandledByEdges()

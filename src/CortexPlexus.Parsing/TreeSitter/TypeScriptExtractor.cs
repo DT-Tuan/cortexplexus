@@ -33,8 +33,71 @@ internal sealed class TypeScriptExtractor
     {
         CollectExports(root);
         var fileNamespace = _relativePath;
+        EmitModuleSymbol(root, fileNamespace);
+        DetectModuleScopeRelationships(root, fileNamespace);
         WalkNode(root, containingTypeFqn: null, fileNamespace: fileNamespace);
         return (_symbols, _relationships);
+    }
+
+    // Node types that own a named scoped symbol whose body is scanned elsewhere
+    // (ExtractClass/ExtractFunction/etc.). Scanning them again at module scope
+    // would double-count nested config/http/event reads.
+    private static readonly HashSet<string> ScopedDeclarationTypes =
+    [
+        "class_declaration", "abstract_class_declaration", "interface_declaration",
+        "function_declaration", "generator_function_declaration",
+        "enum_declaration", "type_alias_declaration", "method_definition",
+    ];
+
+    /// <summary>
+    /// Emit a vertex for the module/file itself so module-scope edges (imports,
+    /// module-level <c>ReadsConfig</c>) have a real endpoint with a file location.
+    /// "module" is not an embeddable kind (see <see cref="Core.EmbeddableKinds"/>).
+    /// </summary>
+    private void EmitModuleSymbol(global::TreeSitter.Node root, string fileNamespace)
+    {
+        _symbols.Add(new NamespaceInfo
+        {
+            Fqn = fileNamespace,
+            Name = System.IO.Path.GetFileName(_relativePath),
+            Kind = "module",
+            FilePath = _filePath,
+            StartLine = 1,
+            EndLine = (int)root.EndPosition.Row + 1,
+        });
+    }
+
+    /// <summary>
+    /// Scan module-scope (top-level) statements for config/http/event access,
+    /// attributed to the module FQN — e.g. <c>const port = process.env.PORT</c>
+    /// at file top level. Scoped declarations are skipped (their bodies are scanned
+    /// by their own extractors); <c>export</c> wrappers are unwrapped so
+    /// <c>export const x = process.env.Y</c> is still caught (GH #6).
+    /// </summary>
+    private void DetectModuleScopeRelationships(global::TreeSitter.Node root, string fileNamespace)
+    {
+        foreach (var child in root.Children)
+            ScanModuleScopeNode(child, fileNamespace);
+    }
+
+    private void ScanModuleScopeNode(global::TreeSitter.Node node, string fileNamespace)
+    {
+        if (ScopedDeclarationTypes.Contains(node.Type))
+            return;
+
+        // Unwrap `export ...` so `export const x = process.env.Y` is scanned but
+        // `export class Foo {...}` is still skipped.
+        if (node.Type == "export_statement")
+        {
+            foreach (var inner in node.Children)
+                if (inner.IsNamed)
+                    ScanModuleScopeNode(inner, fileNamespace);
+            return;
+        }
+
+        _relationships.AddRange(ConfigAccessDetector.DetectTypeScript(node, fileNamespace));
+        _relationships.AddRange(HttpCallDetector.DetectTypeScript(node, fileNamespace));
+        _relationships.AddRange(EventPatternDetector.DetectTypeScript(node, fileNamespace));
     }
 
     private void CollectExports(global::TreeSitter.Node node)
