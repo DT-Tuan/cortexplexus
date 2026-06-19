@@ -958,6 +958,15 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
         //    convention (Python/JS) as the noise filter instead — this also drops Python
         //    dunders like __init__. (A C# method literally named `_x` is rare and treated
         //    as intentionally-special; acceptable trade-off.)
+        // False-positive filters for tree-sitter languages (the relational table has no
+        // language column, so we key off path conventions):
+        //  • Test files — helper classes inside test modules (fakes/stubs/fixtures) are invoked
+        //    by the test runner or via duck-typing, not by static Calls edges. is_test_method
+        //    only flags `test_*` functions, so exclude by path too (mirrors the extractor's own
+        //    test-file heuristic: `test_`, `/tests/`, `.test.`, `.spec.`).
+        //  • Framework reflection entrypoints — Alembic `upgrade`/`downgrade` in
+        //    `migrations/versions/` are invoked by the migration runner, never by app code
+        //    (same class as HTTP endpoints, R21 #6).
         var methodsSql = """
             SELECT fqn, name, kind, signature, file_path, start_line
             FROM public.code_symbols
@@ -966,6 +975,11 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
               AND (accessibility IN ('public', 'internal', 'export') OR accessibility IS NULL)
               AND COALESCE(is_test_method, FALSE) = FALSE
               AND LEFT(name, 1) <> '_'
+              AND COALESCE(file_path, '') NOT LIKE '%test\_%' ESCAPE '\'
+              AND COALESCE(file_path, '') NOT LIKE '%/tests/%'
+              AND COALESCE(file_path, '') NOT LIKE '%.test.%'
+              AND COALESCE(file_path, '') NOT LIKE '%.spec.%'
+              AND COALESCE(file_path, '') NOT LIKE '%/migrations/versions/%'
             ORDER BY name
             LIMIT 500
             """;

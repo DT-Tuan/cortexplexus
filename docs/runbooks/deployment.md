@@ -50,11 +50,22 @@ docker compose down -v     # Stop + delete data (full reset)
 ```
 
 ## Updating
+
+The published images (`ghcr.io/<owner>/cortexplexus:main` and `…-postgres:main`) are built
+and pushed by GitHub Actions (`.github/workflows/docker-publish.yml`) on every push to `main`
+and on `v*.*.*` tags. The compose file references those prebuilt images (`image:`), so updating
+a running deployment is a **pull + recreate** — there is no local build step:
+
 ```bash
-git pull
-docker compose build
+docker compose pull
 docker compose up -d
+docker image prune -f   # optional: reclaim old image layers
 ```
+
+> `docker compose build` does **nothing** here — the services use prebuilt GHCR images, not a
+> local `build:` context. (An older `deploy.sh` that built a `cortexplexus-app:slim` tag and
+> `docker load`ed it would silently no-op, because the compose file no longer references that
+> tag — the container just restarts the old image.)
 
 ## Logs
 ```bash

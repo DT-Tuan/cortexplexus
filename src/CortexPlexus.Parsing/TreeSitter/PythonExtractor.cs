@@ -261,7 +261,8 @@ internal sealed class PythonExtractor
         }
     }
 
-    private void ExtractFunction(global::TreeSitter.Node node, string? containingClass, string callerScope)
+    private void ExtractFunction(global::TreeSitter.Node node, string? containingClass, string callerScope,
+        bool isProperty = false)
     {
         var name = GetNameText(node);
         if (name is null) return;
@@ -275,11 +276,16 @@ internal sealed class PythonExtractor
         var body = node.GetChildForField("body");
         var isTest = name.StartsWith("test_") || _isTestFile && name.StartsWith("test_");
 
+        // A @property/@cached_property (or a .setter/.getter) is accessed as an attribute,
+        // not called — emitting it as "method" makes it a false dead-code candidate. Mark it
+        // as "property" (excluded from get_dead_code, mirroring how Roslyn handles C# properties).
+        var kind = isProperty && isMethod ? "property" : (isMethod ? "method" : "function");
+
         _symbols.Add(new MethodInfo
         {
             Fqn = fqn,
             Name = name,
-            Kind = isMethod ? "method" : "function",
+            Kind = kind,
             FilePath = _filePath,
             StartLine = (int)node.StartPosition.Row + 1,
             EndLine = (int)node.EndPosition.Row + 1,
@@ -310,22 +316,36 @@ internal sealed class PythonExtractor
 
     private void ExtractDecorated(global::TreeSitter.Node node, string? containingClass, string callerScope)
     {
-        var definition = node.GetChildForField("definition");
-        if (definition is not null)
-        {
-            WalkNode(definition, containingClass, callerScope);
-        }
+        var definition = node.GetChildForField("definition")
+            ?? node.Children.FirstOrDefault(c => c.Type is "function_definition" or "class_definition");
+        if (definition is null) return;
+
+        // A method decorated with @property / @cached_property / @x.setter is accessed as an
+        // attribute, not called — route it through ExtractFunction with the property flag so it
+        // isn't reported as dead code.
+        if (definition.Type == "function_definition")
+            ExtractFunction(definition, containingClass, callerScope, isProperty: HasPropertyDecorator(node));
         else
+            WalkNode(definition, containingClass, callerScope);
+    }
+
+    /// <summary>
+    /// True if the decorated_definition carries a property-style decorator:
+    /// <c>@property</c>, <c>@functools.cached_property</c>, or a <c>@name.setter/getter/deleter</c>.
+    /// </summary>
+    private static bool HasPropertyDecorator(global::TreeSitter.Node decoratedDefinition)
+    {
+        foreach (var child in decoratedDefinition.Children)
         {
-            foreach (var child in node.Children)
-            {
-                if (child.Type is "function_definition" or "class_definition")
-                {
-                    WalkNode(child, containingClass, callerScope);
-                    return;
-                }
-            }
+            if (child.Type != "decorator") continue;
+            var text = (child.Text ?? string.Empty).TrimStart('@').Trim();
+            var paren = text.IndexOf('(');          // drop call args: cached_property(...) → cached_property
+            if (paren >= 0) text = text[..paren];
+            var last = text.Contains('.') ? text[(text.LastIndexOf('.') + 1)..] : text;
+            if (last is "property" or "cached_property" or "setter" or "getter" or "deleter")
+                return true;
         }
+        return false;
     }
 
     private void ExtractImport(global::TreeSitter.Node node)

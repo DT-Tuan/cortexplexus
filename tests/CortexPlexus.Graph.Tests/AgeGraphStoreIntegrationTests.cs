@@ -59,7 +59,8 @@ public class AgeGraphStoreIntegrationTests : IAsyncLifetime
         string kind,
         Guid repoId,
         string? accessibility = "public",
-        bool isTestMethod = false)
+        bool isTestMethod = false,
+        string? filePath = null)
     {
         await using var conn = await ds.OpenConnectionAsync();
         await using var cmd = conn.CreateCommand();
@@ -73,7 +74,7 @@ public class AgeGraphStoreIntegrationTests : IAsyncLifetime
         cmd.Parameters.AddWithValue("@kind", kind);
         cmd.Parameters.AddWithValue("@repo", repoId);
         cmd.Parameters.AddWithValue("@acc", (object?)accessibility ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@fp", $"/repo/{name}.cs");
+        cmd.Parameters.AddWithValue("@fp", filePath ?? $"/repo/{name}.cs");
         cmd.Parameters.AddWithValue("@sig", $"{name}()");
         cmd.Parameters.AddWithValue("@ist", isTestMethod);
         await cmd.ExecuteNonQueryAsync();
@@ -265,6 +266,29 @@ public class AgeGraphStoreIntegrationTests : IAsyncLifetime
         Assert.Contains(deadCode, r => r.Name == "orphanExport");   // exported TS, no caller → dead
         Assert.DoesNotContain(deadCode, r => r.Name == "used_fn");  // has incoming Calls → not dead
         Assert.DoesNotContain(deadCode, r => r.Name == "_private_helper"); // underscore → filtered as private
+    }
+
+    // === Multi-language false-positive filters: test files + framework reflection entrypoints ===
+    [Fact]
+    public async Task QueryDeadCode_ExcludesTestFilesAndMigrationEntrypoints()
+    {
+        var repoId = await _fixture.SeedRepositoryAsync(_dataSource);
+
+        // Production dead function → should be reported.
+        await SeedCodeSymbolAsync(_dataSource, "app.svc.orphan", "orphan", "function", repoId,
+            accessibility: null, filePath: "app/svc.py");
+        // Test-helper class method (fake/stub) — invoked via duck-typing, not static calls.
+        await SeedCodeSymbolAsync(_dataSource, "tests.fakes._FakeRepo.save_record", "save_record", "method", repoId,
+            accessibility: null, filePath: "tests/test_repo.py");
+        // Alembic migration entrypoint — invoked by the migration runner.
+        await SeedCodeSymbolAsync(_dataSource, "storage.migrations.versions.0001.upgrade", "upgrade", "function", repoId,
+            accessibility: null, filePath: "storage/migrations/versions/0001_init.py");
+
+        var deadCode = await _store.QueryDeadCodeAsync(repoId);
+
+        Assert.Contains(deadCode, r => r.Name == "orphan");
+        Assert.DoesNotContain(deadCode, r => r.Name == "save_record");  // test-file path
+        Assert.DoesNotContain(deadCode, r => r.Name == "upgrade");      // migrations/versions path
     }
 
     // === R21 Fix #6: HTTP endpoint methods should be excluded from dead code ===

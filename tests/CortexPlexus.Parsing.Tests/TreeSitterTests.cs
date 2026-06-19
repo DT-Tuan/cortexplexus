@@ -359,6 +359,30 @@ public sealed class PythonExtractorTests
         Assert.Equal("test.load", reads[0].FromFqn);
     }
 
+    [Fact]
+    public void PropertyDecoratedMethodsGetPropertyKind()
+    {
+        // @property / @cached_property are accessed as attributes, not called — must NOT be
+        // emitted as "method" (else they're false dead-code candidates). GH #6 follow-up.
+        var (symbols, _) = ParsePython("""
+            class Cell:
+                @property
+                def priority(self):
+                    return self._p
+
+                @functools.cached_property
+                def composite(self):
+                    return 1
+
+                def normal_method(self):
+                    return 2
+        """);
+
+        Assert.Equal("property", symbols.First(s => s.Name == "priority").Kind);
+        Assert.Equal("property", symbols.First(s => s.Name == "composite").Kind);
+        Assert.Equal("method", symbols.First(s => s.Name == "normal_method").Kind);
+    }
+
     private static (List<CodeSymbol>, List<Relationship>) ParsePython(string code)
     {
         var lang = new global::TreeSitter.Language("python");
