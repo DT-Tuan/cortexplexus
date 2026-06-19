@@ -1,6 +1,6 @@
 # ADR-015: Content-aware index freshness (kill the time-based false-STALE)
 
-**Status:** Proposed
+**Status:** Accepted — B1 implemented (2026-06-19); B2–B4 planned
 **Date:** 2026-06-18
 
 ## Context
@@ -136,8 +136,10 @@ next index populates the git columns.
 
 ## Rollout (incremental — separate work item from Phase 1 multi-language)
 
-- **B1 (signal fix, ship first):** Lever 3 relabel + footer gating. No schema, no agent
-  change. Kills the user-reported false-STALE.
+- **B1 (signal fix) — ✅ DONE 2026-06-19:** Lever 3 relabel + footer removal in `StalenessLabel`.
+  No schema, no agent change. `Format` now returns a neutral `(indexed N ago)` (no STALE/VERY
+  STALE alarm); `SearchFooter` returns `null` (the age-based "don't rely, re-index" nag is gone —
+  a content-drift footer returns in B2). Kills the user-reported false-STALE.
 - **B2 (provable freshness):** schema migration + agent sends `indexed_commit` /
   `indexed_tree_dirty`; `list_repositories` shows the git-verified verdict; `cortex-mcp`
   skill does the local git compare (Lever 1).

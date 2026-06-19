@@ -28,24 +28,26 @@ public sealed class StalenessLabelTests
     }
 
     [Fact]
-    public void Format_TwoDaysOld_ReturnsStale()
+    public void Format_TwoDaysOld_NeutralAgeNoAlarm()
     {
+        // ADR-015 B1: age is informational — no "STALE" alarm on a clock.
         var lastIndexed = Now.AddDays(-2);
         var result = StalenessLabel.Format(lastIndexed, Now);
         Assert.NotNull(result);
         Assert.Contains("2 days ago", result);
-        Assert.Contains("STALE", result!);
-        Assert.DoesNotContain("VERY", result!);
+        Assert.DoesNotContain("STALE", result!);
     }
 
     [Fact]
-    public void Format_TenDaysOld_ReturnsVeryStale()
+    public void Format_TenDaysOld_NeutralAgeNoAlarm()
     {
+        // ADR-015 B1: even a 10-day-old index is reported neutrally — staleness is decided by
+        // content drift (B2), not elapsed time.
         var lastIndexed = Now.AddDays(-10);
         var result = StalenessLabel.Format(lastIndexed, Now);
         Assert.NotNull(result);
         Assert.Contains("10 days ago", result);
-        Assert.Contains("VERY STALE", result!);
+        Assert.DoesNotContain("STALE", result!);
     }
 
     [Fact]
@@ -72,22 +74,13 @@ public sealed class StalenessLabelTests
     }
 
     [Fact]
-    public void SearchFooter_Stale_ReturnsWarning()
+    public void SearchFooter_OldIndex_ReturnsNull_NoAgeNag()
     {
-        var result = StalenessLabel.SearchFooter(Now.AddDays(-2), Now);
-        Assert.NotNull(result);
-        Assert.Contains("STALE", result);
-        Assert.Contains("ActivateAgent", result);
-        Assert.Contains("2 days ago", result!);
-    }
-
-    [Fact]
-    public void SearchFooter_VeryStale_Escalates()
-    {
-        var result = StalenessLabel.SearchFooter(Now.AddDays(-14), Now);
-        Assert.NotNull(result);
-        Assert.Contains("VERY STALE", result);
-        Assert.Contains("14 days ago", result!);
+        // ADR-015 B1: the age-based "results may be stale, re-index before relying" footer is
+        // removed — it pushed agents off the MCP for a fresh-but-old index. A content-drift
+        // footer returns in B2; until then no footer regardless of age.
+        Assert.Null(StalenessLabel.SearchFooter(Now.AddDays(-2), Now));
+        Assert.Null(StalenessLabel.SearchFooter(Now.AddDays(-14), Now));
     }
 
     [Fact]
