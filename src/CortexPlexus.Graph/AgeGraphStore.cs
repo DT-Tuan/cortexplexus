@@ -1026,6 +1026,9 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
         await CollectIncomingEdgeTargetsAsync(conn, "Subscribes", usedFqns, ct);
         // Methods covered by tests — definitely not dead
         await CollectIncomingEdgeTargetsAsync(conn, "TestCovers", usedFqns, ct);
+        // Polymorphic methods (ABC/Protocol/base contracts + their overrides) — called through
+        // the base type, so static Calls edges miss them. Exclude both ends of an override pair.
+        await CollectPolymorphicMethodFqnsAsync(conn, repoId, usedFqns, ct);
 
         var deadCode = new List<SearchResult>();
         foreach (var candidate in candidates)
@@ -1081,6 +1084,74 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to collect incoming {Edge} edge targets — treating as empty", relationshipType);
+        }
+    }
+
+    /// <summary>
+    /// Collect FQNs of methods that participate in an inheritance override pair, so they are
+    /// excluded from dead-code. Polymorphic calls (<c>adapter.fetch()</c> where <c>adapter</c> is
+    /// typed as a base/Protocol) don't produce a static Calls edge to either the base contract or
+    /// the concrete override, so both ends look "dead" though they're reached at runtime.
+    ///
+    /// Tree-sitter <c>Inherits</c> edges target the base class's RAW name (not a resolved FQN), so
+    /// we bridge by matching a real class node whose <c>name</c> equals that raw target. Two
+    /// directions, both scoped to the repo:
+    ///   • override:  (C)-[:Inherits]->(baseRef), realBase.name = baseRef.fqn, realBase has a
+    ///                method with the same name as C's method  ⇒ C's method overrides a base.
+    ///   • contract:  (sub)-[:Inherits]->(cRef) where cRef.fqn = C.name, sub has a method with the
+    ///                same name  ⇒ C's method is a base contract overridden by a subclass.
+    /// Name-based matching can over-exclude on class-name collisions, but for dead-code that errs
+    /// safe (a false "not dead" beats a false "dead").
+    /// </summary>
+    private async Task CollectPolymorphicMethodFqnsAsync(
+        NpgsqlConnection conn, Guid repoId, HashSet<string> target, CancellationToken ct)
+    {
+        var repo = EscapeCypher(repoId.ToString());
+        var queries = new[]
+        {
+            // C's method overrides a base-class method of the same name.
+            $$"""
+            MATCH (c)-[:HasMethod]->(m)
+            MATCH (c)-[:Inherits]->(baseRef)
+            MATCH (realBase)-[:HasMethod]->(bm)
+            WHERE m.repo_id = '{{repo}}' AND realBase.name = baseRef.fqn AND bm.name = m.name
+            RETURN DISTINCT m.fqn
+            """,
+            // C's method is a base contract overridden by a subclass method of the same name.
+            $$"""
+            MATCH (c)-[:HasMethod]->(m)
+            MATCH (sub)-[:Inherits]->(cRef)
+            MATCH (sub)-[:HasMethod]->(sm)
+            WHERE m.repo_id = '{{repo}}' AND cRef.fqn = c.name AND sm.name = m.name
+            RETURN DISTINCT m.fqn
+            """,
+        };
+
+        foreach (var cypher in queries)
+        {
+            var sql = $"""
+                SELECT m_fqn::text
+                FROM cypher('{GraphName}', $$
+                {cypher}
+                $$) AS (m_fqn agtype);
+                """;
+            try
+            {
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText = sql;
+                await using var reader = await cmd.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    if (reader.IsDBNull(0)) continue;
+                    var fqn = UnquoteAgtype(reader.GetString(0));
+                    if (!string.IsNullOrEmpty(fqn))
+                        target.Add(fqn);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to collect polymorphic method FQNs — treating as empty");
+            }
         }
     }
 

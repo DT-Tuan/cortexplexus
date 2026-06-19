@@ -360,6 +360,23 @@ public sealed class PythonExtractorTests
     }
 
     [Fact]
+    public void ResolvesConstantIndirectionConfigRead()
+    {
+        // GH #6 case #2: os.environ.get(CONST) where CONST is a module-level string constant.
+        var (_, relationships) = ParsePython("""
+            import os
+            API_KEY_ENV = "HIVE_VBEE_API_KEY"
+
+            class VbeeProvider:
+                def __init__(self):
+                    self._key = os.environ.get(API_KEY_ENV)
+            """);
+
+        Assert.Contains(relationships, r =>
+            r.Type == RelationshipType.ReadsConfig && r.ToFqn == "env:HIVE_VBEE_API_KEY");
+    }
+
+    [Fact]
     public void PropertyDecoratedMethodsGetPropertyKind()
     {
         // @property / @cached_property are accessed as attributes, not called — must NOT be

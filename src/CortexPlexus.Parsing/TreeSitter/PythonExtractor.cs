@@ -25,6 +25,13 @@ internal sealed class PythonExtractor
     /// </summary>
     private readonly Dictionary<string, string> _nameResolution = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Module/class-level string constants (<c>API_KEY_ENV = "HIVE_VBEE_API_KEY"</c>) so
+    /// config-access detection can resolve constant-indirection reads like
+    /// <c>os.environ.get(API_KEY_ENV)</c> (GH #6 case #2). Built in a pre-pass.
+    /// </summary>
+    private readonly Dictionary<string, string> _stringConstants = new(StringComparer.Ordinal);
+
     public PythonExtractor(string sourceCode, string filePath, string relativePath)
     {
         _filePath = filePath;
@@ -48,6 +55,7 @@ internal sealed class PythonExtractor
     public (List<CodeSymbol> Symbols, List<Relationship> Relationships) Extract(global::TreeSitter.Node root)
     {
         BuildNameResolution(root);
+        BuildStringConstants(root);
         EmitModuleSymbol(root);
         DetectModuleScopeRelationships(root);
         WalkNode(root, containingClass: null, callerScope: _modulePath);
@@ -86,7 +94,7 @@ internal sealed class PythonExtractor
             if (child.Type is "function_definition" or "class_definition" or "decorated_definition")
                 continue;
 
-            _relationships.AddRange(ConfigAccessDetector.DetectPython(child, _modulePath));
+            _relationships.AddRange(ConfigAccessDetector.DetectPython(child, _modulePath, _stringConstants));
             _relationships.AddRange(HttpCallDetector.DetectPython(child, _modulePath));
             _relationships.AddRange(EventPatternDetector.DetectPython(child, _modulePath));
         }
@@ -124,6 +132,67 @@ internal sealed class PythonExtractor
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// Pre-pass: collect module-level and class-level <c>NAME = "literal"</c> string constants
+    /// so config detection can resolve <c>os.environ.get(NAME)</c> (GH #6 case #2). Only module
+    /// scope and class-attribute scope are collected (not function locals) — that matches how env
+    /// key-name constants are declared and avoids resolving unrelated local variables.
+    /// </summary>
+    private void BuildStringConstants(global::TreeSitter.Node root)
+    {
+        foreach (var child in root.Children)
+        {
+            CollectConstAssignment(child);
+
+            var def = child.Type == "decorated_definition" ? child.GetChildForField("definition") : child;
+            if (def?.Type != "class_definition") continue;
+            var body = def.GetChildForField("body");
+            if (body is null) continue;
+            foreach (var stmt in body.Children)
+                CollectConstAssignment(stmt);
+        }
+    }
+
+    private void CollectConstAssignment(global::TreeSitter.Node stmt)
+    {
+        var assignment = stmt.Type == "assignment"
+            ? stmt
+            : stmt.Type == "expression_statement"
+                ? stmt.Children.FirstOrDefault(c => c.Type == "assignment")
+                : null;
+        if (assignment is null) return;
+
+        var left = assignment.GetChildForField("left");
+        var right = assignment.GetChildForField("right");
+        if (left?.Type != "identifier" || right is null) return;
+        if (TryGetPyStringLiteral(right, out var value))
+            _stringConstants[NodeText(left)] = value;
+    }
+
+    /// <summary>Extract the value of a Python string node (uses the <c>string_content</c> child;
+    /// falls back to stripping surrounding quotes). Returns false for non-string RHS.</summary>
+    private static bool TryGetPyStringLiteral(global::TreeSitter.Node node, out string value)
+    {
+        value = "";
+        if (node.Type != "string") return false;
+
+        foreach (var child in node.Children)
+        {
+            if (child.Type != "string_content") continue;
+            value = child.Text ?? "";
+            return value.Length > 0;
+        }
+
+        // Fallback: strip quote delimiters from the raw text.
+        var text = node.Text ?? "";
+        if (text.Length >= 2 && (text[0] is '"' or '\'') && text[^1] == text[0])
+        {
+            value = text[1..^1];
+            return value.Length > 0;
+        }
+        return false;
     }
 
     /// <summary><c>import a.b.c as x</c> ⇒ <c>x</c>→<c>a.b.c</c>. Plain
@@ -240,7 +309,7 @@ internal sealed class PythonExtractor
 
         if (body is not null)
         {
-            _relationships.AddRange(ConfigAccessDetector.DetectPython(body, fqn));
+            _relationships.AddRange(ConfigAccessDetector.DetectPython(body, fqn, _stringConstants));
             _relationships.AddRange(HttpCallDetector.DetectPython(body, fqn));
             _relationships.AddRange(EventPatternDetector.DetectPython(body, fqn));
             WalkChildren(body, containingClass: fqn, callerScope: callerScope);
@@ -305,7 +374,7 @@ internal sealed class PythonExtractor
 
         if (body is not null)
         {
-            _relationships.AddRange(ConfigAccessDetector.DetectPython(body, fqn));
+            _relationships.AddRange(ConfigAccessDetector.DetectPython(body, fqn, _stringConstants));
             _relationships.AddRange(HttpCallDetector.DetectPython(body, fqn));
             _relationships.AddRange(EventPatternDetector.DetectPython(body, fqn));
             // containingClass kept (so self/cls inside this body still resolves to the

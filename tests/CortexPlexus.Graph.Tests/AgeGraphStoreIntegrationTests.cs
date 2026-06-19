@@ -291,6 +291,47 @@ public class AgeGraphStoreIntegrationTests : IAsyncLifetime
         Assert.DoesNotContain(deadCode, r => r.Name == "upgrade");      // migrations/versions path
     }
 
+    // === Case D: polymorphic (ABC/Protocol/base) methods reached via the base type ===
+    [Fact]
+    public async Task QueryDeadCode_ExcludesPolymorphicOverridePairs()
+    {
+        // Base.fetch (contract) + Rss.fetch (override) are called as `adapter.fetch()` on a
+        // base-typed reference → no static Calls edge to either → both look dead. The override
+        // pair (linked by Inherits + same method name) must be excluded; an unrelated orphan
+        // with no callers stays dead.
+        var repoId = await _fixture.SeedRepositoryAsync(_dataSource);
+
+        // Relational candidates (dead-code reads candidates from code_symbols).
+        await SeedCodeSymbolAsync(_dataSource, "app.adapters.base.Base.fetch", "fetch", "method", repoId,
+            accessibility: null, filePath: "app/adapters/base.py");
+        await SeedCodeSymbolAsync(_dataSource, "app.adapters.rss.Rss.fetch", "fetch", "method", repoId,
+            accessibility: null, filePath: "app/adapters/rss.py");
+        await SeedCodeSymbolAsync(_dataSource, "app.svc.orphan", "orphan", "function", repoId,
+            accessibility: null, filePath: "app/svc.py");
+
+        // Graph nodes (classes + methods) + edges (HasMethod, raw-name Inherits like the
+        // tree-sitter extractor emits).
+        await _store.UpsertNodesAsync(new CodeSymbol[]
+        {
+            new ClassInfo { Fqn = "app.adapters.base.Base", Name = "Base", Kind = "class", RepoId = repoId },
+            new ClassInfo { Fqn = "app.adapters.rss.Rss", Name = "Rss", Kind = "class", RepoId = repoId },
+            new MethodInfo { Fqn = "app.adapters.base.Base.fetch", Name = "fetch", Kind = "method", RepoId = repoId, Signature = "fetch(self)" },
+            new MethodInfo { Fqn = "app.adapters.rss.Rss.fetch", Name = "fetch", Kind = "method", RepoId = repoId, Signature = "fetch(self)" },
+        });
+        await _store.UpsertEdgesAsync(new[]
+        {
+            new Relationship("app.adapters.base.Base", "app.adapters.base.Base.fetch", RelationshipType.HasMethod),
+            new Relationship("app.adapters.rss.Rss", "app.adapters.rss.Rss.fetch", RelationshipType.HasMethod),
+            new Relationship("app.adapters.rss.Rss", "Base", RelationshipType.Inherits), // raw base name
+        });
+
+        var deadCode = await _store.QueryDeadCodeAsync(repoId);
+
+        Assert.Contains(deadCode, r => r.Name == "orphan");                          // genuinely dead
+        Assert.DoesNotContain(deadCode, r => r.Fqn == "app.adapters.rss.Rss.fetch"); // override
+        Assert.DoesNotContain(deadCode, r => r.Fqn == "app.adapters.base.Base.fetch"); // contract
+    }
+
     // === R21 Fix #6: HTTP endpoint methods should be excluded from dead code ===
     [Fact]
     public async Task QueryDeadCode_ExcludesMethodsWithHandledByEdges()

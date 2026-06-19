@@ -20,11 +20,12 @@ internal static class ConfigAccessDetector
     /// Scans a tree-sitter AST node for config/env access patterns.
     /// Call this from within an extractor's WalkNode when visiting call or subscript nodes.
     /// </summary>
-    public static List<Relationship> DetectPython(global::TreeSitter.Node root, string callerFqn)
+    public static List<Relationship> DetectPython(global::TreeSitter.Node root, string callerFqn,
+        IReadOnlyDictionary<string, string>? constants = null)
     {
         var results = new List<Relationship>();
         var seen = new HashSet<string>();
-        WalkForPython(root, callerFqn, results, seen);
+        WalkForPython(root, callerFqn, results, seen, constants);
         return results;
     }
 
@@ -71,7 +72,7 @@ internal static class ConfigAccessDetector
     // --- Python: os.environ["KEY"], os.environ.get("KEY"), os.getenv("KEY") ---
 
     private static void WalkForPython(global::TreeSitter.Node node, string callerFqn,
-        List<Relationship> results, HashSet<string> seen)
+        List<Relationship> results, HashSet<string> seen, IReadOnlyDictionary<string, string>? constants)
     {
         var text = node.Text ?? "";
 
@@ -79,7 +80,7 @@ internal static class ConfigAccessDetector
         if (node.Type == "subscript" && text.Contains("os.environ"))
         {
             var subscript = GetChildByFieldName(node, "subscript");
-            if (subscript is not null && TryGetStringValue(subscript, out var key))
+            if (subscript is not null && TryResolveKey(subscript, constants, out var key))
                 AddEnvEdge(callerFqn, key, "os.environ", results, seen);
         }
 
@@ -95,14 +96,33 @@ internal static class ConfigAccessDetector
                 if (args is not null)
                 {
                     var firstArg = GetFirstNamedChild(args);
-                    if (firstArg is not null && TryGetStringValue(firstArg, out var key))
+                    if (firstArg is not null && TryResolveKey(firstArg, constants, out var key))
                         AddEnvEdge(callerFqn, key, "os.environ", results, seen);
                 }
             }
         }
 
         foreach (var child in node.Children)
-            WalkForPython(child, callerFqn, results, seen);
+            WalkForPython(child, callerFqn, results, seen, constants);
+    }
+
+    /// <summary>
+    /// Resolve a config-key argument to its string value: a string literal directly, or — for
+    /// the constant-indirection case <c>KEY = "FOO"; os.environ.get(KEY)</c> (GH #6 case #2) — a
+    /// bare identifier looked up in the module/class-level string-constant map.
+    /// </summary>
+    private static bool TryResolveKey(global::TreeSitter.Node node,
+        IReadOnlyDictionary<string, string>? constants, out string key)
+    {
+        if (TryGetStringValue(node, out key)) return true;
+        if (node.Type == "identifier" && constants is not null
+            && constants.TryGetValue(node.Text ?? "", out var value) && !string.IsNullOrEmpty(value))
+        {
+            key = value;
+            return true;
+        }
+        key = "";
+        return false;
     }
 
     // --- TypeScript/JavaScript: process.env.KEY, process.env["KEY"] ---
