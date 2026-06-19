@@ -332,6 +332,44 @@ public class AgeGraphStoreIntegrationTests : IAsyncLifetime
         Assert.DoesNotContain(deadCode, r => r.Fqn == "app.adapters.base.Base.fetch"); // contract
     }
 
+    // === Case D (structural): Protocol/ABC conformance WITHOUT inheritance (PEP 544) ===
+    [Fact]
+    public async Task QueryDeadCode_ExcludesStructuralProtocolConformance()
+    {
+        // `class SourceAdapter(Protocol)` defines fetch(); `class RssAdapter:` implements it
+        // structurally — NO inheritance edge between them. Calls go through the Protocol type,
+        // so neither has a Calls edge. Exclude any method named like a Protocol/ABC method.
+        var repoId = await _fixture.SeedRepositoryAsync(_dataSource);
+
+        await SeedCodeSymbolAsync(_dataSource, "app.base.SourceAdapter.fetch", "fetch", "method", repoId,
+            accessibility: null, filePath: "app/base.py");
+        await SeedCodeSymbolAsync(_dataSource, "app.rss.RssAdapter.fetch", "fetch", "method", repoId,
+            accessibility: null, filePath: "app/rss.py");
+        await SeedCodeSymbolAsync(_dataSource, "app.svc.orphan", "orphan", "function", repoId,
+            accessibility: null, filePath: "app/svc.py");
+
+        await _store.UpsertNodesAsync(new CodeSymbol[]
+        {
+            new ClassInfo { Fqn = "app.base.SourceAdapter", Name = "SourceAdapter", Kind = "class", RepoId = repoId },
+            new ClassInfo { Fqn = "app.rss.RssAdapter", Name = "RssAdapter", Kind = "class", RepoId = repoId },
+            new MethodInfo { Fqn = "app.base.SourceAdapter.fetch", Name = "fetch", Kind = "method", RepoId = repoId, Signature = "fetch(self)" },
+            new MethodInfo { Fqn = "app.rss.RssAdapter.fetch", Name = "fetch", Kind = "method", RepoId = repoId, Signature = "fetch(self)" },
+        });
+        await _store.UpsertEdgesAsync(new[]
+        {
+            new Relationship("app.base.SourceAdapter", "Protocol", RelationshipType.Inherits), // PEP 544 marker
+            new Relationship("app.base.SourceAdapter", "app.base.SourceAdapter.fetch", RelationshipType.HasMethod),
+            new Relationship("app.rss.RssAdapter", "app.rss.RssAdapter.fetch", RelationshipType.HasMethod),
+            // NOTE: deliberately NO Inherits edge between RssAdapter and SourceAdapter.
+        });
+
+        var deadCode = await _store.QueryDeadCodeAsync(repoId);
+
+        Assert.Contains(deadCode, r => r.Name == "orphan");
+        Assert.DoesNotContain(deadCode, r => r.Fqn == "app.base.SourceAdapter.fetch"); // contract
+        Assert.DoesNotContain(deadCode, r => r.Fqn == "app.rss.RssAdapter.fetch");     // structural impl
+    }
+
     // === R21 Fix #6: HTTP endpoint methods should be excluded from dead code ===
     [Fact]
     public async Task QueryDeadCode_ExcludesMethodsWithHandledByEdges()

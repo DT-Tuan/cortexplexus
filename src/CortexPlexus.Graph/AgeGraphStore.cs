@@ -1125,6 +1125,20 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
             WHERE m.repo_id = '{{repo}}' AND cRef.fqn = c.name AND sm.name = m.name
             RETURN DISTINCT m.fqn
             """,
+            // Structural Protocol/ABC conformance (Python PEP 544): implementors do NOT inherit
+            // the Protocol — they just match its method signatures — so there is NO Inherits edge
+            // between them (the two queries above find nothing for this, the common case). Detect
+            // contract classes by their `Inherits → Protocol/ABC` marker, then exclude every repo
+            // method whose name matches a contract method (both the contract itself and its
+            // structural implementors). Name-based ⇒ errs safe for dead-code.
+            $$"""
+            MATCH (proto)-[:Inherits]->(base)
+            MATCH (proto)-[:HasMethod]->(pm)
+            MATCH (impl)-[:HasMethod]->(m)
+            WHERE base.fqn IN ['Protocol', 'ABC', 'ABCMeta']
+              AND proto.repo_id = '{{repo}}' AND m.repo_id = '{{repo}}' AND m.name = pm.name
+            RETURN DISTINCT m.fqn
+            """,
         };
 
         foreach (var cypher in queries)
