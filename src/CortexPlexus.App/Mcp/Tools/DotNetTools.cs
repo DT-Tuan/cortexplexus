@@ -226,6 +226,61 @@ public sealed class DotNetTools
         return sb.ToString();
     }
 
+    [McpServerTool, Description(
+        "Audit project dependencies across ecosystems — npm (package.json), pip " +
+        "(requirements.txt / pyproject.toml), Go (go.mod), Rust (Cargo.toml), PHP (composer.json), " +
+        "Maven (pom.xml) and .NET (.csproj). Lists declared dependencies with versions, grouped by " +
+        "manifest. Generalizes get_nuget_audit to every supported language.")]
+    public static string GetDependencyAudit(
+        [Description("Path to project or directory to audit. Defaults to the server workspace.")] string? path = null,
+        [Description("Filter to one ecosystem (optional): npm | pip | go | cargo | composer | maven | nuget")] string? ecosystem = null)
+    {
+        path ??= Environment.GetEnvironmentVariable("Workspace__Path") ?? "/workspace";
+
+        // Agent-uploaded projects exist only as graph metadata — manifest files are NOT on the
+        // server filesystem (same limitation as get_nuget_audit). Explain instead of throwing.
+        if (!Directory.Exists(path))
+            return $"Path '{path}' does not exist on the server. " +
+                   "Note: agent-uploaded projects (/workspace/_agent/...) contain only graph " +
+                   "metadata, not source files. Dependency audit reads manifest files " +
+                   "(package.json, requirements.txt, go.mod, Cargo.toml, composer.json, pom.xml, " +
+                   ".csproj) from disk. Run it on a local checkout, or point at a path inside " +
+                   "/workspace that contains source.";
+
+        var analyzer = new PackageManifestAnalyzer();
+        var deps = analyzer.AnalyzeDirectory(path);
+
+        if (ecosystem is not null)
+            deps = deps
+                .Where(d => d.Ecosystem.Equals(ecosystem, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+        if (deps.Count == 0)
+            return ecosystem is not null
+                ? $"No '{ecosystem}' dependencies found in '{path}'."
+                : $"No dependencies found in '{path}'. " +
+                  "No recognized manifest (package.json, requirements.txt, pyproject.toml, go.mod, " +
+                  "Cargo.toml, composer.json, pom.xml, .csproj) was present.";
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Dependencies ({deps.Count}):");
+        sb.AppendLine();
+
+        foreach (var group in deps.GroupBy(d => d.Manifest).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var eco = group.Select(d => d.Ecosystem).Distinct().FirstOrDefault() ?? "?";
+            sb.AppendLine($"  [{group.Key}] ({eco})");
+            foreach (var dep in group.OrderBy(d => d.IsDev).ThenBy(d => d.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                var devTag = dep.IsDev ? "  (dev)" : "";
+                sb.AppendLine($"    {dep.Name} {dep.Version}{devTag}");
+            }
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
+
     [McpServerTool, Description("Get architecture overview — modules, layers, key components")]
     public static async Task<string> GetArchitecture(
         [Description("Repository name to focus on (optional — omit for all)")] string? repository = null,

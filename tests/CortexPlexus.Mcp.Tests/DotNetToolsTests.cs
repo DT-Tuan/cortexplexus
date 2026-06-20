@@ -424,4 +424,58 @@ public class DotNetToolsTests
 
         Assert.Empty(result);
     }
+
+    // === ADR-016 C1: GetDependencyAudit (multi-ecosystem) ===
+    [Fact]
+    public void GetDependencyAudit_NonExistentPath_ReturnsHelpfulMessage()
+    {
+        var nonExistent = Path.Combine(Path.GetTempPath(), $"cortex-nope-{Guid.NewGuid():N}");
+        Assert.False(Directory.Exists(nonExistent));
+
+        var result = DotNetTools.GetDependencyAudit(nonExistent);
+
+        Assert.Contains("does not exist on the server", result);
+        Assert.Contains("agent-uploaded projects", result);
+    }
+
+    [Fact]
+    public void GetDependencyAudit_EmptyDirectory_ReportsNoDependencies()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"cortex-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var result = DotNetTools.GetDependencyAudit(tempDir);
+            Assert.Contains("No dependencies found", result);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void GetDependencyAudit_ListsDepsAndHonorsEcosystemFilter()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"cortex-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(tempDir, "package.json"),
+                """{ "dependencies": { "express": "^4.18.2" } }""");
+            File.WriteAllText(Path.Combine(tempDir, "requirements.txt"), "flask==3.0.0\n");
+
+            var all = DotNetTools.GetDependencyAudit(tempDir);
+            Assert.Contains("express", all);
+            Assert.Contains("flask", all);
+
+            var pipOnly = DotNetTools.GetDependencyAudit(tempDir, ecosystem: "pip");
+            Assert.Contains("flask", pipOnly);
+            Assert.DoesNotContain("express", pipOnly);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
 }

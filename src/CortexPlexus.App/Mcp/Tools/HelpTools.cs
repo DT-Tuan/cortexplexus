@@ -189,7 +189,8 @@ public sealed class HelpTools
         - GetEntityMapping(entityName?, repository?)     — EF Core entities (DbContext → DbSet → Entity)
         - GetApiEndpoints(moduleName?, repository?)      — API routes (Minimal API + MVC controllers)
         - GetDataFlow(endpointRoute)                     — Trace: endpoint → handler → services
-        - GetNuGetAudit(path?)                           — NuGet package versions
+        - GetNuGetAudit(path?)                           — NuGet package versions (.NET only)
+        - GetDependencyAudit(path?, ecosystem?)          — Deps across npm/pip/go/cargo/composer/maven/nuget
         - GetArchitecture(repository?)                   — Architecture overview (modules + DI + endpoints)
 
         ## CODE QUALITY & ARCHITECTURE
