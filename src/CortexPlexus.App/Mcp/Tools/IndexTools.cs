@@ -110,6 +110,45 @@ public sealed class IndexTools
         return FormatResult(repoName, repoPath, stats, url, branch);
     }
 
+    [McpServerTool, Description(
+        "Delete an indexed repository and ALL its data — graph nodes/edges, code symbols, " +
+        "embeddings, and file hashes. Irreversible: the project must be re-indexed to restore it. " +
+        "Use to clean up test/stale/duplicate repositories (e.g. ones created by mis-indexing). " +
+        "Requires the EXACT repository name from list_repositories (no fuzzy match, to avoid " +
+        "deleting the wrong repo).")]
+    public static async Task<string> DeleteRepository(
+        [Description("Exact repository name to delete (must match list_repositories).")] string name,
+        IGraphStore graphStore = default!,
+        IRepositoryStore repoStore = default!,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return "Error: repository name is required.";
+
+        // Exact (case-insensitive) match only — a destructive op must never fuzzy-resolve.
+        var repos = await repoStore.ListAsync(ct);
+        var matches = repos
+            .Where(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (matches.Count == 0)
+            return $"Repository '{name}' not found. Call list_repositories for valid names. " +
+                   "Nothing was deleted.";
+        if (matches.Count > 1)
+            return $"Ambiguous: {matches.Count} repositories are named '{name}'. " +
+                   "Nothing was deleted — resolve the duplicate names first.";
+
+        var repo = matches[0];
+
+        // 1) AGE graph vertices (+ their edges) by repo_id; 2) relational rows (cascades
+        // code_symbols incl. embeddings + file_hashes).
+        await graphStore.DeleteByRepoAsync(repo.Id, ct);
+        var symbolCount = await repoStore.DeleteAsync(repo.Id, ct);
+
+        return $"Deleted repository '{repo.Name}' ({repo.Path}). Removed {symbolCount} code symbols " +
+               "plus their graph nodes, embeddings, and file hashes. Re-index to restore.";
+    }
+
     private static string FormatResult(string projectName, string path, IndexingStats stats, string? gitUrl = null, string? branch = null)
     {
         var header = gitUrl is not null

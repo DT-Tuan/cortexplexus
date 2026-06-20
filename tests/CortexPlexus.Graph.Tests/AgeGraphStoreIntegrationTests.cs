@@ -110,6 +110,53 @@ public class AgeGraphStoreIntegrationTests : IAsyncLifetime
         Assert.Equal("1", result?.Trim());
     }
 
+    // === DeleteRepository: AGE vertices + relational cascade both gone ===
+    [Fact]
+    public async Task DeleteRepository_RemovesGraphNodesAndCascadesRelationalRows()
+    {
+        var repoId = await _fixture.SeedRepositoryAsync(_dataSource);
+        var method = MakeMethod("App.Doomed.Process()", "Process", repoId);
+        await _store.UpsertNodesAsync(new[] { method });                 // AGE vertex
+        await SeedCodeSymbolAsync(_dataSource, "App.Doomed.Process()", "Process", "method", repoId);
+
+        var repoStore = new RepositoryStore(_dataSource);
+
+        // Same order the DeleteRepository tool uses: AGE graph first, then relational cascade.
+        await _store.DeleteByRepoAsync(repoId);
+        var removed = await repoStore.DeleteAsync(repoId);
+
+        Assert.True(removed >= 1, "DeleteAsync should report the removed code_symbols count");
+
+        await using var conn = await _dataSource.OpenConnectionAsync();
+
+        await using (var c1 = conn.CreateCommand())
+        {
+            c1.CommandText = "SELECT count(*) FROM code_symbols WHERE repo_id = @id";
+            c1.Parameters.AddWithValue("@id", repoId);
+            Assert.Equal(0L, (long)(await c1.ExecuteScalarAsync())!);     // cascaded
+        }
+        await using (var c2 = conn.CreateCommand())
+        {
+            c2.CommandText = "SELECT count(*) FROM repositories WHERE id = @id";
+            c2.Parameters.AddWithValue("@id", repoId);
+            Assert.Equal(0L, (long)(await c2.ExecuteScalarAsync())!);
+        }
+
+        await using (var loadAge = conn.CreateCommand())
+        {
+            loadAge.CommandText = "LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;";
+            await loadAge.ExecuteNonQueryAsync();
+        }
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT cnt::text FROM cypher('code_graph', $$
+                MATCH (n) WHERE n.fqn = 'App.Doomed.Process()' RETURN count(n)
+            $$) AS (cnt agtype);
+            """;
+        var cnt = (string?)await cmd.ExecuteScalarAsync();
+        Assert.Equal("0", cnt?.Trim());                                  // AGE vertex gone
+    }
+
     // === #6: UpsertEdges_InvalidFqn_WarnsAndContinues ===
     [Fact]
     public async Task UpsertEdges_InvalidFqn_StillProcessesOthers()

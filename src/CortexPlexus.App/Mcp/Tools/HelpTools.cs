@@ -153,6 +153,10 @@ public sealed class HelpTools
           Clone from Git URL and index.
           Example: IndexFromGit("https://github.com/org/repo.git", branch: "develop")
 
+        - DeleteRepository(name)
+          Delete an indexed repo + all its data (graph, symbols, embeddings). Irreversible.
+          Example: DeleteRepository("old-test-repo")
+
         ## COMPOSITE (prefer these — 1 call replaces 4-5 calls)
         - ExploreTopic(query, repository?, depth?)
           Deep-explore a symbol: search → callers → deps → callees → impls.

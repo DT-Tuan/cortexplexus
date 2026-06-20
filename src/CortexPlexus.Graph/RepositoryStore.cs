@@ -73,6 +73,26 @@ public sealed class RepositoryStore(NpgsqlDataSource dataSource) : IRepositorySt
         return results;
     }
 
+    public async Task<int> DeleteAsync(Guid repoId, CancellationToken ct = default)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+
+        // Count first so the caller can report what was removed (the DELETE cascades, so
+        // code_symbols rows are gone by the time it returns).
+        await using var countCmd = conn.CreateCommand();
+        countCmd.CommandText = "SELECT count(*) FROM code_symbols WHERE repo_id = @id";
+        countCmd.Parameters.AddWithValue("@id", repoId);
+        var symbolCount = Convert.ToInt32(await countCmd.ExecuteScalarAsync(ct) ?? 0);
+
+        // FK cascade removes code_symbols (incl. embedding vector + tsvector) and file_hashes.
+        await using var delCmd = conn.CreateCommand();
+        delCmd.CommandText = "DELETE FROM repositories WHERE id = @id";
+        delCmd.Parameters.AddWithValue("@id", repoId);
+        await delCmd.ExecuteNonQueryAsync(ct);
+
+        return symbolCount;
+    }
+
     public async Task UpdateLastIndexedAsync(Guid repoId, CancellationToken ct = default)
     {
         const string sql = "UPDATE repositories SET last_indexed = NOW() WHERE id = @id";
