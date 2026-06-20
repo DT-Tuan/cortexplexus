@@ -100,6 +100,10 @@ internal sealed class JavaExtractor
 
         _relationships.Add(new Relationship(outer ?? _packageName, fqn, RelationshipType.Declares));
 
+        // ADR-016 C3: a Spring stereotype annotation (@Component/@Service/...) makes this class a
+        // self-registered bean → emit a di_registration node.
+        _symbols.AddRange(DiDetector.DetectJavaClass(node, fqn, _filePath));
+
         // Inheritance: superclass
         var superclass = node.GetChildForField("superclass");
         if (superclass is not null)

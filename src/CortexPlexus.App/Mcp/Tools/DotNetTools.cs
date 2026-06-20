@@ -42,7 +42,10 @@ public sealed class DotNetTools
         return (repos.Count == 1 ? repos[0].Id : (Guid?)null, null);
     }
 
-    [McpServerTool, Description("Get DI container service registrations (AddScoped, AddTransient, AddSingleton)")]
+    [McpServerTool, Description(
+        "Get DI container service registrations across languages — ASP.NET " +
+        "(AddScoped/AddTransient/AddSingleton), Spring (@Component/@Service/@Repository/@Controller/" +
+        "@Configuration beans) and NestJS/Angular (@Injectable providers).")]
     public static async Task<string> GetDiRegistrations(
         [Description("Filter by service type name (optional)")] string? serviceType = null,
         [Description("Repository name to scope results (optional)")] string? repository = null,

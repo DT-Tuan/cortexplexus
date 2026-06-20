@@ -87,7 +87,11 @@ public static class SymbolDtoMapper
                 RepoId = repoId, Documentation = dto.Documentation, AiSummary = dto.AiSummary,
                 DbSets = dto.DbSets?.Select(d => new DbSetInfo(d.EntityTypeFqn, d.PropertyName, d.TableName)).ToList() ?? []
             },
-            "di-registration" => new DiRegistrationInfo
+            // "di_registration" is the Kind the emitters set (Roslyn + tree-sitter, ADR-016 C3);
+            // "di-registration" kept for back-compat. SanitizeLabel strips the hyphen, so without
+            // the underscore case an uploaded registration fell through to NamespaceInfo and lost
+            // ServiceTypeFqn/ImplementationTypeFqn/Lifetime.
+            "di-registration" or "di_registration" => new DiRegistrationInfo
             {
                 Fqn = dto.Fqn, Name = dto.Name, Kind = dto.Kind,
                 FilePath = dto.FilePath, StartLine = dto.StartLine, EndLine = dto.EndLine,

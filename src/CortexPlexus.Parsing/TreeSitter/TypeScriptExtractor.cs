@@ -197,6 +197,11 @@ internal sealed class TypeScriptExtractor
         });
 
         _relationships.Add(new Relationship(fileNamespace, fqn, RelationshipType.Declares));
+
+        // ADR-016 C3: an @Injectable() decorator makes this class a self-registered DI provider
+        // (NestJS / Angular) → emit a di_registration node.
+        _symbols.AddRange(DiDetector.DetectTypeScriptClass(node, fqn, _filePath));
+
         ExtractClassHeritage(node, fqn);
 
         var body = FindChildByType(node, "class_body");
