@@ -97,7 +97,10 @@ public static class SymbolDtoMapper
                 Lifetime = dto.Lifetime ?? "Scoped",
                 ModuleName = dto.ModuleName
             },
-            "endpoint" => new ApiEndpointInfo
+            // "api_endpoint" is the Kind the emitters actually set (Roslyn + tree-sitter, ADR-016 C2);
+            // "endpoint" kept for back-compat. Without the api_endpoint case an uploaded endpoint
+            // fell through to the NamespaceInfo default, dropping HttpMethod/RouteTemplate.
+            "endpoint" or "api_endpoint" => new ApiEndpointInfo
             {
                 Fqn = dto.Fqn, Name = dto.Name, Kind = dto.Kind,
                 FilePath = dto.FilePath, StartLine = dto.StartLine, EndLine = dto.EndLine,

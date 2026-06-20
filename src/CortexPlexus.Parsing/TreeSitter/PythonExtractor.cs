@@ -331,7 +331,7 @@ internal sealed class PythonExtractor
     }
 
     private void ExtractFunction(global::TreeSitter.Node node, string? containingClass, string callerScope,
-        bool isProperty = false)
+        bool isProperty = false, global::TreeSitter.Node? decoratedParent = null)
     {
         var name = GetNameText(node);
         if (name is null) return;
@@ -372,6 +372,15 @@ internal sealed class PythonExtractor
         else
             _relationships.Add(new Relationship(_modulePath, fqn, RelationshipType.Declares));
 
+        // ADR-016 C2: a decorated function may declare an HTTP route (FastAPI/Flask). The handler
+        // FQN is known here, so the HandledBy edge target is exact.
+        if (decoratedParent is not null)
+        {
+            var (endpoints, edges) = EndpointDetector.DetectPythonRoutes(decoratedParent, fqn, _filePath);
+            _symbols.AddRange(endpoints);
+            _relationships.AddRange(edges);
+        }
+
         if (body is not null)
         {
             _relationships.AddRange(ConfigAccessDetector.DetectPython(body, fqn, _stringConstants));
@@ -393,7 +402,8 @@ internal sealed class PythonExtractor
         // attribute, not called — route it through ExtractFunction with the property flag so it
         // isn't reported as dead code.
         if (definition.Type == "function_definition")
-            ExtractFunction(definition, containingClass, callerScope, isProperty: HasPropertyDecorator(node));
+            ExtractFunction(definition, containingClass, callerScope,
+                isProperty: HasPropertyDecorator(node), decoratedParent: node);
         else
             WalkNode(definition, containingClass, callerScope);
     }

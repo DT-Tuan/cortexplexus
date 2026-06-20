@@ -88,7 +88,10 @@ public sealed class DotNetTools
         return sb.ToString();
     }
 
-    [McpServerTool, Description("List API endpoints (Minimal API MapGet/MapPost/etc)")]
+    [McpServerTool, Description(
+        "List HTTP API endpoints across languages — ASP.NET (Minimal API MapGet/MapPost, MVC " +
+        "[HttpGet]) and Python (FastAPI/Flask route decorators). Returns each route as " +
+        "METHOD + path with its source file.")]
     public static async Task<string> GetApiEndpoints(
         [Description("Filter by module name (optional)")] string? moduleName = null,
         [Description("Repository name to scope results (optional)")] string? repository = null,
@@ -103,7 +106,7 @@ public sealed class DotNetTools
         if (results.Count == 0)
             return moduleName is not null
                 ? $"No API endpoints found for module '{moduleName}'."
-                : "No API endpoints found. Index an ASP.NET project first.";
+                : "No API endpoints found. Index an ASP.NET, FastAPI, or Flask project first.";
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"API Endpoints ({results.Count}):");
