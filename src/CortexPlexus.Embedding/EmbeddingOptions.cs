@@ -17,12 +17,18 @@ public sealed record EmbeddingOptions
     public string? VertexProjectId { get; set; }
 
     /// <summary>
-    /// Vertex location. <c>"global"</c> (default) targets the bare
-    /// <c>aiplatform.googleapis.com</c> host with NO region prefix; any other
-    /// value (e.g. <c>"us-central1"</c>) prefixes the host as
+    /// Vertex location. Default <c>"us-central1"</c>, which prefixes the host as
     /// <c>{location}-aiplatform.googleapis.com</c>.
+    /// <para>
+    /// <b>Do not use <c>"global"</c> for embeddings.</b> The global endpoint
+    /// (bare <c>aiplatform.googleapis.com</c>, no region prefix) is still
+    /// supported, but measured ~11.5 s per <c>:predict</c> call on
+    /// <c>text-embedding-005</c> vs ~1.55 s on <c>us-central1</c> (ADR-017
+    /// benchmark, 2026-06-21) — a 7.5× regression that drops throughput below
+    /// even the local Ollama baseline.
+    /// </para>
     /// </summary>
-    public string VertexLocation { get; set; } = "global";
+    public string VertexLocation { get; set; } = "us-central1";
 
     /// <summary>Vertex embedding model id (e.g. <c>text-embedding-005</c>).</summary>
     public string VertexModelId { get; set; } = "text-embedding-005";

@@ -75,6 +75,28 @@ are Ollama-768 and others Vertex-768 yields **meaningless cross-boundary
 distances**. The operator must either keep one provider fleet-wide or accept that
 cross-repo semantic queries only make sense within a same-provider cohort.
 
+## Benchmark (LXC `.14`, 2026-06-21)
+
+Measured on the LXC host against the live Vertex API, mirroring the production
+path (sub-batch 5, `outputDimensionality` 768, 200-text corpus, warmup discarded,
+median of 3 runs):
+
+| Location | Parallelism | Throughput | vs Ollama 4.6 t/s |
+|----------|------------:|-----------:|------------------:|
+| `global` | 4 | **1.7 texts/s** | 0.4× (worse) |
+| `us-central1` | 4 | 13.1 texts/s | 2.8× |
+| **`us-central1`** | **8** | **26.4 texts/s** | **5.7×** ✅ |
+
+**Key finding:** the `global` endpoint is pathological for `text-embedding-005`
+— ~11.5 s per `:predict` call vs ~1.55 s on `us-central1` (7.5×). The first
+ad-hoc validation calls *looked* fast only because they were never timed; the
+sustained number is what counts (cf. the "measure before projecting" rule). The
+default `VertexLocation` is therefore **`us-central1`**, and the Vertex
+`MaxParallelBatches` default is **8** (each `EmbedBatchAsync` runs its 5-instance
+sub-batches sequentially, so pipeline parallelism is the only concurrency). With
+that config the >20 texts/s acceptance is met (26.4 t/s, 5.7× the throttled
+on-box Ollama baseline).
+
 ## Consequences
 
 - **Pro:** Embedding throughput decoupled from LXC I/O contention — target

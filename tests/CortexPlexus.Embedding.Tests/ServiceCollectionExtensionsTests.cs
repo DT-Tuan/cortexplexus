@@ -55,10 +55,11 @@ public class ServiceCollectionExtensionsTests
     }
 
     [Fact]
-    public void Vertex_Provider_AutoDefaults_To_FourParallel()
+    public void Vertex_Provider_AutoDefaults_To_EightParallel()
     {
-        // Vertex is a managed API (request-throughput bound), so client
-        // parallelism is free throughput — same rationale as Gemini (ADR-017).
+        // Vertex issues sub-batches of 5 sequentially per EmbedBatchAsync, so
+        // pipeline-level parallelism is the only concurrency. 8 measured 26.4
+        // texts/s on us-central1 (>20 target) vs 13.1 at 4 — ADR-017 benchmark.
         var opts = ResolveOptions(o =>
         {
             o.Provider = "vertex";
@@ -66,7 +67,7 @@ public class ServiceCollectionExtensionsTests
             o.VertexApiKey = "k";
         });
 
-        Assert.Equal(4, opts.MaxParallelBatches);
+        Assert.Equal(8, opts.MaxParallelBatches);
     }
 
     [Fact]

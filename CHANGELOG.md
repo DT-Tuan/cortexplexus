@@ -27,8 +27,12 @@ Versioning notes:
     one `:predict` call per sub-batch, matching Vertex's per-call instance cap
     for `text-embedding-004/005` (differs from Gemini's single 100-instance call).
   - `EmbeddingOptions` gains `VertexProjectId`, `VertexLocation` (default
-    `global` ⇒ bare host, no region prefix), `VertexModelId`,
-    `VertexInstancesPerCall`, `VertexApiKey`. `vertex ⇒ MaxParallelBatches=4`.
+    **`us-central1`**), `VertexModelId`, `VertexInstancesPerCall`,
+    `VertexApiKey`. `vertex ⇒ MaxParallelBatches=8`.
+  - **Benchmark (LXC, 2026-06-21):** `us-central1` + parallel 8 = **26.4 texts/s**
+    (5.7× the throttled on-box Ollama 4.6 t/s, clears the >20 target). The
+    `global` endpoint is a footgun for embeddings — ~11.5 s/call vs ~1.55 s on
+    `us-central1` (7.5× slower → 1.7 t/s), so `global` is **not** the default.
   - `Program.cs` now binds the `Embedding` configuration section (UserSecrets in
     Development, env vars in the container) in addition to env-var reads, so the
     Vertex API key stays runtime-only and is never committed.

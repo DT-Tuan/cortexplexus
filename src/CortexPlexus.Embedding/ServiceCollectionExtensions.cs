@@ -55,7 +55,8 @@ public static class ServiceCollectionExtensions
     /// Currently handles <see cref="EmbeddingOptions.MaxParallelBatches"/>:
     /// <list type="bullet">
     /// <item>Ollama → 1 (single-thread CPU-bound model; parallelism wastes work via queue contention)</item>
-    /// <item>Gemini / Vertex → 4 (managed API, request-throughput bound; parallelism is free throughput)</item>
+    /// <item>Gemini → 4 (single 100-instance batch call; plenty under quota)</item>
+    /// <item>Vertex → 8 (sequential 5-instance sub-batches ⇒ pipeline parallelism is the only concurrency; 26 texts/s measured, ADR-017)</item>
     /// </list>
     /// Public so unit tests and downstream consumers can apply the same defaults
     /// when constructing options manually (without going through DI).
@@ -64,8 +65,18 @@ public static class ServiceCollectionExtensions
     {
         if (options.MaxParallelBatches is null)
         {
-            options.MaxParallelBatches =
-                options.Provider.Equals("ollama", StringComparison.OrdinalIgnoreCase) ? 1 : 4;
+            options.MaxParallelBatches = options.Provider.ToLowerInvariant() switch
+            {
+                // Ollama: single-thread CPU-bound — parallelism wastes work (R17).
+                "ollama" => 1,
+                // Vertex: each EmbedBatchAsync issues sub-batches of 5 SEQUENTIALLY,
+                // so pipeline-level parallelism is the only concurrency. 8 concurrent
+                // :predict calls measured 26.4 texts/s on us-central1 (>20 target,
+                // 5.7× Ollama) vs 13.1 at 4 — ADR-017 benchmark 2026-06-21.
+                "vertex" => 8,
+                // Gemini: single 100-instance batch call; 4 is plenty under quota.
+                _ => 4
+            };
         }
     }
 }
