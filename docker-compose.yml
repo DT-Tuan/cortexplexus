@@ -35,6 +35,13 @@ services:
       - Embedding__Provider=${EMBEDDING_PROVIDER:-ollama}
       - Embedding__ApiKey=${GEMINI_API_KEY:-}
       - Embedding__OllamaBaseUrl=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # Vertex AI provider (ADR-017) — only consulted when EMBEDDING_PROVIDER=vertex.
+      # Values (incl. the API key) live in the gitignored .env, never committed.
+      - Embedding__VertexProjectId=${VERTEX_PROJECT_ID:-}
+      - Embedding__VertexLocation=${VERTEX_LOCATION:-global}
+      - Embedding__VertexModelId=${VERTEX_MODEL_ID:-text-embedding-005}
+      - Embedding__VertexApiKey=${VERTEX_API_KEY:-}
+      - Embedding__VertexInstancesPerCall=${VERTEX_INSTANCES_PER_CALL:-5}
       - Workspace__Path=/workspace
     volumes:
       - ${WORKSPACE_PATH:-.}:/workspace
