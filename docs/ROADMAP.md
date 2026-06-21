@@ -14,6 +14,7 @@
 | **8** | Local Agent & Slim Docker | 2 days | ✅ Complete |
 | **9** | Multi-Language Expansion | 1 day | ✅ Complete |
 | **10** | Code Intelligence: Docs, Summaries & Test Mapping | 1 day | ✅ Complete |
+| **Tier B** | Multi-Language Framework Intelligence (ADR-016) | — | ✅ C1–C4 shipped (2026-06-21) |
 
 ---
 
@@ -345,6 +346,46 @@ Developer Machine                          CortexPlexus Server (slim)
 
 ---
 
+## Tier B — Multi-Language Framework Intelligence (ADR-016)
+
+**Goal:** Make the framework-level tools (API endpoints, DI, dependency audit) work for non-.NET
+stacks — not just C#/.NET. Lever: the graph tools query by **node-kind label**, so emitting the same
+`api_endpoint` / `di_registration` nodes (identical `API:<METHOD>:<route>` / `DI:<svc>-><impl>` FQN +
+`HandledBy`) from the tree-sitter path lights up the existing tools with **zero new tool surface**.
+**Status:** ✅ C1–C4 shipped + deployed + live-verified (2026-06-21).
+**Reference:** [ADR-016](decisions/016-multi-language-framework-intelligence.md).
+
+### Phases
+
+| # | Phase | Status | PR | Notes |
+|---|-------|--------|----|-------|
+| C1 | Dependency audit — `PackageManifestAnalyzer` + `get_dependency_audit` | ✅ | #13 | npm/pip/go/cargo/composer/maven/.NET |
+| C2 | API endpoints — Python (FastAPI/Flask) + TypeScript (NestJS/Express) | ✅ | #14, #21 | `api_endpoint` nodes + `HandledBy` |
+| C3 | DI registrations — Java Spring + NestJS/Angular `@Injectable` | ✅ | #15 | `di_registration` nodes |
+| C4 | Discoverability — ServerInstructions + GetHelp + tool descriptions | ✅ | #20 | drop stale ".NET-only" |
+| — | Go/Java/Django endpoints + Spring `@Bean` DI | ⏳ Backlog | — | the multi-framework tail |
+| — | `get_entity_mapping` / `get_middleware_pipeline` for non-.NET | ⏸ Deferred | — | high per-stack variance (ADR-016) |
+
+### Infra fixes (surfaced during live verification)
+
+| Item | Status | PR |
+|------|--------|----|
+| Repo-splitting — watcher fragmented a multi-package project into one repo per directory | ✅ | #16 |
+| `delete_repository` MCP tool — relational cascade + AGE `DETACH DELETE` | ✅ | #17 |
+| Empty-path phantom guard — don't register a repo for a missing/empty path | ✅ | #18 |
+| Workspace-root phantom guard — watcher must not auto-index the mount root | ✅ | #19 |
+
+### Live verification (on the LXC deployment, via host-clone + `index_from_local`)
+- `get_api_endpoints`: FastAPI-realworld (10 routes), NestJS starter (`@Get`), Express (`app.get`/`router.post`)
+- `get_di_registrations`: NestJS `@Injectable`
+- `get_dependency_audit` / `delete_repository`: verified via raw JSON-RPC (new tools need a fresh MCP session)
+
+**Deliverable:** ✅ Framework tools now span stacks — `get_api_endpoints` (ASP.NET/FastAPI/Flask/NestJS/
+Express), `get_di_registrations` (ASP.NET/Spring/NestJS), `get_dependency_audit` (7 ecosystems),
+`get_config_usage` (8 languages) — plus the `delete_repository` tool and watcher/phantom hardening.
+
+---
+
 ## Deployment Info
 
 Default endpoints when running locally with `docker compose up -d`:
@@ -452,7 +493,8 @@ Default endpoints when running locally with `docker compose up -d`:
 - Code review suggestions based on graph patterns
 - Graph explorer enhancements: hierarchical layouts, edge labels, namespace grouping
 - DiContainerAnalyzer: factory patterns (AddScoped with lambda)
-- Deep analysis for Java (Spring DI, JPA entities) — extend JavaExtractor
-- Deep analysis for Go (gin/echo routes, GORM models)
-- Deep analysis for Rust (actix-web routes, diesel models)
-- Deep analysis for PHP (Laravel DI, Eloquent models)
+- Deep analysis for Java — Spring DI `@Component/@Service` ✅ (Tier B C3); endpoints `@GetMapping` + JPA entities ⏳
+- Deep analysis for Go — gin/echo/net-http routes ⏳ (Tier B tail); GORM models ⏳
+- Deep analysis for Rust (actix-web routes, diesel models) ⏳
+- Deep analysis for PHP (Laravel DI, Eloquent models) ⏳
+- Python Django routes (`urls.py` `path()`/`re_path`) ⏳ (Tier B tail)
