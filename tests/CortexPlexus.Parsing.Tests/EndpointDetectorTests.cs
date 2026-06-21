@@ -178,4 +178,113 @@ public sealed class EndpointDetectorTests
         Assert.Equal("API:GET:/me", ep.Fqn);
         Assert.Equal("test.Views.me", ep.HandlerMethodFqn);
     }
+
+    // === TypeScript: NestJS controller decorators + Express route calls (C2/2) ===
+
+    private static (List<CodeSymbol> Symbols, List<Relationship> Relationships) ParseTypeScript(string code)
+    {
+        var lang = new global::TreeSitter.Language("typescript");
+        using var parser = new global::TreeSitter.Parser(lang);
+        using var tree = parser.Parse(code);
+        var extractor = new TypeScriptExtractor(code, "test.ts", "test.ts");
+        return extractor.Extract(tree.RootNode);
+    }
+
+    [Fact]
+    public void Nest_ControllerPrefixPlusGet_CombinesRouteAndLinksHandler()
+    {
+        var (symbols, rels) = ParseTypeScript("""
+        @Controller("cats")
+        export class CatsController {
+          @Get(":id")
+          findOne(id: string) { return id; }
+        }
+        """);
+
+        var ep = Assert.Single(Endpoints(symbols));
+        Assert.Equal("API:GET:/cats/:id", ep.Fqn);
+        Assert.Equal("GET", ep.HttpMethod);
+        Assert.Contains(rels, r => r.Type == RelationshipType.HandledBy
+                                && r.FromFqn == "API:GET:/cats/:id"
+                                && r.ToFqn.EndsWith(".findOne"));
+    }
+
+    [Fact]
+    public void Nest_PostNoArg_UsesControllerRoot()
+    {
+        var (symbols, _) = ParseTypeScript("""
+        @Controller("cats")
+        export class CatsController {
+          @Post()
+          create() {}
+        }
+        """);
+
+        var ep = Assert.Single(Endpoints(symbols));
+        Assert.Equal("API:POST:/cats", ep.Fqn);
+    }
+
+    [Fact]
+    public void Nest_EmptyControllerPlusRoutedGet_UsesMethodRoute()
+    {
+        var (symbols, _) = ParseTypeScript("""
+        @Controller()
+        export class HealthController {
+          @Get("health")
+          check() {}
+        }
+        """);
+
+        var ep = Assert.Single(Endpoints(symbols));
+        Assert.Equal("API:GET:/health", ep.Fqn);
+    }
+
+    [Fact]
+    public void NonControllerClass_GetMethodName_IsNotAnEndpoint()
+    {
+        // A plain class with a method literally named "get" must not become a route.
+        var (symbols, _) = ParseTypeScript("""
+        export class Cache {
+          get(key: string) { return key; }
+        }
+        """);
+
+        Assert.Empty(Endpoints(symbols));
+    }
+
+    [Fact]
+    public void Express_AppGetWithHandler_EmitsEndpoint()
+    {
+        var (symbols, _) = ParseTypeScript("""
+        const app = express();
+        app.get("/users", (req, res) => res.send([]));
+        router.post("/users/:id", handler);
+        """);
+
+        var eps = Endpoints(symbols);
+        Assert.Contains(eps, e => e.Fqn == "API:GET:/users");
+        Assert.Contains(eps, e => e.Fqn == "API:POST:/users/:id");
+    }
+
+    [Fact]
+    public void Express_MapGetWithSingleNonRouteArg_IsNotAnEndpoint()
+    {
+        // map.get("port") and app.get("setting") — getter calls, not routes.
+        var (symbols, _) = ParseTypeScript("""
+        const v = config.get("port");
+        const s = app.get("trust proxy");
+        """);
+
+        Assert.Empty(Endpoints(symbols));
+    }
+
+    [Fact]
+    public void Express_NonStringRoute_IsNotAnEndpoint()
+    {
+        var (symbols, _) = ParseTypeScript("""
+        app.get(routePath, handler);
+        """);
+
+        Assert.Empty(Endpoints(symbols));
+    }
 }

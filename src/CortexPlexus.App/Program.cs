@@ -124,7 +124,7 @@ async Task RunServe(string[] args)
                 "questions: search_code (exact name), semantic_search (concept), get_callers / " +
                 "get_callees / get_impact_analysis (relationships). ALWAYS pass repository:\"<name>\" " +
                 "(see list_repositories) to scope. Framework-aware tools now span multiple stacks: " +
-                "get_api_endpoints (ASP.NET + Python FastAPI/Flask), get_di_registrations " +
+                "get_api_endpoints (ASP.NET + Python FastAPI/Flask + TS NestJS/Express), get_di_registrations " +
                 "(ASP.NET + Java Spring + NestJS), get_dependency_audit (npm/pip/go/cargo/composer/" +
                 "maven/.NET), get_config_usage (8 languages). Still C#/.NET-only: get_entity_mapping, " +
                 "get_middleware_pipeline, get_nuget_audit (use get_dependency_audit for other " +

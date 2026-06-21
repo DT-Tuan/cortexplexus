@@ -189,7 +189,7 @@ public sealed class HelpTools
         then pass FQN to graph tools.
 
         ## FRAMEWORK & ARCHITECTURE (multi-language unless noted)
-        - GetApiEndpoints(moduleName?, repository?)      — HTTP routes: ASP.NET + Python FastAPI/Flask
+        - GetApiEndpoints(moduleName?, repository?)      — HTTP routes: ASP.NET + Python FastAPI/Flask + TS NestJS/Express
         - GetDiRegistrations(serviceType?, repository?)  — DI: ASP.NET + Java Spring + NestJS @Injectable
         - GetDependencyAudit(path?, ecosystem?)          — Deps across npm/pip/go/cargo/composer/maven/nuget
         - GetDataFlow(endpointRoute)                     — Trace: endpoint → handler → services

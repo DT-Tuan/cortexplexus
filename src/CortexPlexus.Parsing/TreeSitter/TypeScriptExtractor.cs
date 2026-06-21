@@ -16,6 +16,10 @@ internal sealed class TypeScriptExtractor
     private readonly List<Relationship> _relationships = [];
     private readonly HashSet<string> _exportedNames = [];
     private readonly HashSet<string> _testMethodFqns = [];
+
+    // classFqn → NestJS @Controller route prefix, set when the class is extracted so its methods'
+    // @Get/@Post decorators can be combined into full routes (ADR-016 C2/2).
+    private readonly Dictionary<string, string> _controllerPrefixes = new(StringComparer.Ordinal);
     private readonly bool _isTestFile;
 
     public TypeScriptExtractor(string sourceCode, string filePath, string relativePath)
@@ -201,6 +205,12 @@ internal sealed class TypeScriptExtractor
         // ADR-016 C3: an @Injectable() decorator makes this class a self-registered DI provider
         // (NestJS / Angular) → emit a di_registration node.
         _symbols.AddRange(DiDetector.DetectTypeScriptClass(node, fqn, _filePath));
+
+        // ADR-016 C2/2: a NestJS @Controller(...) sets the route prefix for this class's methods.
+        // Record it BEFORE walking the body so ExtractMethod can combine it with @Get/@Post routes.
+        var nestPrefix = EndpointDetector.TryGetNestControllerPrefix(node);
+        if (nestPrefix is not null)
+            _controllerPrefixes[fqn] = nestPrefix;
 
         ExtractClassHeritage(node, fqn);
 
@@ -400,6 +410,15 @@ internal sealed class TypeScriptExtractor
         else
             _relationships.Add(new Relationship(fileNamespace, fqn, RelationshipType.Declares));
 
+        // ADR-016 C2/2: NestJS controller method routes (@Get/@Post/...). Only methods of a class
+        // carrying @Controller get route detection — the prefix was recorded in ExtractClass.
+        if (containingTypeFqn is not null && _controllerPrefixes.TryGetValue(containingTypeFqn, out var prefix))
+        {
+            var (eps, edges) = EndpointDetector.DetectTypeScriptRoutes(node, fqn, prefix, _filePath);
+            _symbols.AddRange(eps);
+            _relationships.AddRange(edges);
+        }
+
         var body = node.GetChildForField("body");
         if (body is not null)
         {
@@ -492,6 +511,11 @@ internal sealed class TypeScriptExtractor
         var callerFqn = containingTypeFqn ?? fileNamespace;
         var relType = _testMethodFqns.Contains(callerFqn) ? RelationshipType.TestCovers : RelationshipType.Calls;
         _relationships.Add(new Relationship(callerFqn, calleeName, relType));
+
+        // ADR-016 C2/2: Express/router route call — app.get("/x", h) / router.post("/x", h).
+        var endpoint = EndpointDetector.DetectExpressCall(node, _filePath);
+        if (endpoint is not null)
+            _symbols.Add(endpoint);
     }
 
     // --- Helpers ---

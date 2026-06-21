@@ -158,4 +158,201 @@ internal static class EndpointDetector
         var end = text.LastIndexOf(quote);
         return end > start ? text[(start + 1)..end] : null;
     }
+
+    // === TypeScript: NestJS method decorators + Express/router route calls (ADR-016 C2/2) ===
+
+    private static readonly Dictionary<string, string> NestMethodDecorators = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Get"] = "GET", ["Post"] = "POST", ["Put"] = "PUT", ["Delete"] = "DELETE",
+        ["Patch"] = "PATCH", ["Options"] = "OPTIONS", ["Head"] = "HEAD", ["All"] = "ALL",
+    };
+
+    private static readonly Dictionary<string, string> ExpressVerbs = new(StringComparer.Ordinal)
+    {
+        ["get"] = "GET", ["post"] = "POST", ["put"] = "PUT", ["delete"] = "DELETE",
+        ["patch"] = "PATCH", ["options"] = "OPTIONS", ["head"] = "HEAD", ["all"] = "ALL",
+    };
+
+    /// <summary>
+    /// If a TS class carries a NestJS <c>@Controller(...)</c> decorator, return its route prefix
+    /// (empty string for <c>@Controller()</c>); null if it is not a controller. The prefix is then
+    /// combined with each method's route. Decorators sit on the class node or its export parent.
+    /// </summary>
+    public static string? TryGetNestControllerPrefix(global::TreeSitter.Node classNode)
+    {
+        foreach (var dec in TsLeadingDecorators(classNode))
+        {
+            if (LastSegment(TsDecoratorName(dec)) == "Controller")
+                return TsDecoratorFirstStringArg(dec) ?? "";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// NestJS: read a method's <c>@Get/@Post/@Put/@Delete/@Patch/@All(...)</c> decorators and emit an
+    /// api_endpoint per route (controller prefix + method route), with a HandledBy edge to the method.
+    /// </summary>
+    public static (List<ApiEndpointInfo> Endpoints, List<Relationship> Relationships) DetectTypeScriptRoutes(
+        global::TreeSitter.Node methodNode, string handlerFqn, string controllerPrefix, string? filePath)
+    {
+        var endpoints = new List<ApiEndpointInfo>();
+        var edges = new List<Relationship>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var dec in TsLeadingDecorators(methodNode))
+        {
+            var name = LastSegment(TsDecoratorName(dec));
+            if (name is null || !NestMethodDecorators.TryGetValue(name, out var verb)) continue;
+
+            var route = TsDecoratorFirstStringArg(dec) ?? "";
+            var full = CombineNestRoute(controllerPrefix, route);
+            var fqn = $"API:{verb}:{full}";
+            if (!seen.Add(fqn)) continue;
+
+            endpoints.Add(new ApiEndpointInfo
+            {
+                Fqn = fqn,
+                Name = $"{verb} {full}",
+                Kind = "api_endpoint",
+                FilePath = filePath,
+                StartLine = (int)methodNode.StartPosition.Row + 1,
+                EndLine = (int)methodNode.EndPosition.Row + 1,
+                HttpMethod = verb,
+                RouteTemplate = full,
+                HandlerMethodFqn = handlerFqn,
+            });
+            edges.Add(new Relationship(fqn, handlerFqn, RelationshipType.HandledBy));
+        }
+        return (endpoints, edges);
+    }
+
+    /// <summary>
+    /// Express/router: <c>app.get("/x", handler)</c> / <c>router.post("/x", ...)</c>. Emits an
+    /// api_endpoint (no HandledBy — the handler is usually inline/loose). Guards against false
+    /// positives (e.g. <c>map.get("k")</c>) by requiring a route literal starting with "/" and at
+    /// least two arguments (route + handler).
+    /// </summary>
+    public static ApiEndpointInfo? DetectExpressCall(global::TreeSitter.Node callNode, string? filePath)
+    {
+        var func = callNode.GetChildForField("function");
+        if (func is null || func.Type != "member_expression") return null;
+
+        var verb = func.GetChildForField("property")?.Text;
+        if (verb is null || !ExpressVerbs.TryGetValue(verb, out var method)) return null;
+
+        var args = callNode.GetChildForField("arguments");
+        if (args is null) return null;
+
+        var route = TsFirstStringArgument(args);
+        if (route is null || !route.StartsWith('/')) return null;   // must look like a route
+        if (CountNamedArgs(args) < 2) return null;                  // route + handler
+
+        return new ApiEndpointInfo
+        {
+            Fqn = $"API:{method}:{route}",
+            Name = $"{method} {route}",
+            Kind = "api_endpoint",
+            FilePath = filePath,
+            StartLine = (int)callNode.StartPosition.Row + 1,
+            EndLine = (int)callNode.EndPosition.Row + 1,
+            HttpMethod = method,
+            RouteTemplate = route,
+        };
+    }
+
+    // --- TS helpers --------------------------------------------------------
+
+    private static IEnumerable<global::TreeSitter.Node> TsLeadingDecorators(global::TreeSitter.Node node)
+    {
+        // Some grammars attach the decorator directly to the member node.
+        foreach (var child in node.Children)
+            if (child.Type == "decorator") yield return child;
+
+        var parent = node.Parent;
+        if (parent is null) yield break;
+
+        // `@Controller() export class X`: decorator + `export` token + class_declaration are all
+        // children of export_statement (the `export` token breaks contiguity), so take them all.
+        if (parent.Type == "export_statement")
+        {
+            foreach (var child in parent.Children)
+                if (child.Type == "decorator") yield return child;
+            yield break;
+        }
+
+        // Otherwise (e.g. a method in class_body, or a non-exported decorated class): decorators are
+        // the sibling `decorator` nodes IMMEDIATELY preceding this node.
+        var pending = new List<global::TreeSitter.Node>();
+        foreach (var child in parent.Children)
+        {
+            if (IsSamePosition(child, node))
+            {
+                foreach (var d in pending) yield return d;
+                yield break;
+            }
+            if (child.Type == "decorator") pending.Add(child);
+            else pending.Clear();
+        }
+    }
+
+    private static bool IsSamePosition(global::TreeSitter.Node a, global::TreeSitter.Node b) =>
+        a.StartPosition.Row == b.StartPosition.Row && a.StartPosition.Column == b.StartPosition.Column;
+
+    private static string? TsDecoratorName(global::TreeSitter.Node decorator)
+    {
+        foreach (var child in decorator.Children)
+        {
+            if (child.Type == "identifier") return child.Text;
+            if (child.Type == "call_expression") return child.GetChildForField("function")?.Text;
+            if (child.Type == "member_expression") return child.Text;
+        }
+        return null;
+    }
+
+    private static string? TsDecoratorFirstStringArg(global::TreeSitter.Node decorator)
+    {
+        foreach (var child in decorator.Children)
+        {
+            if (child.Type == "call_expression")
+            {
+                var args = child.GetChildForField("arguments");
+                return args is null ? null : TsFirstStringArgument(args);
+            }
+            if (child.Type == "string") return StringLiteralValue(child);
+        }
+        return null;
+    }
+
+    private static string? TsFirstStringArgument(global::TreeSitter.Node args)
+    {
+        foreach (var child in args.Children)
+        {
+            if (!child.IsNamed) continue;
+            return child.Type == "string" ? StringLiteralValue(child) : null;
+        }
+        return null;
+    }
+
+    private static int CountNamedArgs(global::TreeSitter.Node args) =>
+        args.Children.Count(c => c.IsNamed);
+
+    /// <summary>Combine a NestJS controller prefix + method route into a single leading-slash path.</summary>
+    private static string CombineNestRoute(string? prefix, string? route)
+    {
+        var parts = new List<string>(2);
+        foreach (var seg in new[] { prefix, route })
+        {
+            var t = (seg ?? "").Trim().Trim('/').Trim();
+            if (t.Length > 0) parts.Add(t);
+        }
+        return "/" + string.Join("/", parts);
+    }
+
+    private static string? LastSegment(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+        var trimmed = name.Trim();
+        var dot = trimmed.LastIndexOf('.');
+        return dot >= 0 ? trimmed[(dot + 1)..] : trimmed;
+    }
 }
