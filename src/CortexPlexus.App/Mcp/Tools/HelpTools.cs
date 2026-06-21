@@ -93,7 +93,7 @@ public sealed class HelpTools
         | Find interface implementations  | GetImplementations("IService")            | Grep class name             |
         | See inheritance tree            | GetClassHierarchy("ClassName")            | Read multiple files         |
         | View DI registrations           | GetDiRegistrations("service")             | Read Startup.cs/Program.cs  |
-        | List API endpoints              | GetApiEndpoints()                         | Grep "MapGet" / "[HttpGet]" |
+        | List API endpoints              | GetApiEndpoints()                         | Grep "MapGet" / "@app.get"  |
         | Trace request flow              | GetDataFlow("/api/route")                 | Read endpoint → handler     |
         | Check test coverage             | GetTestCoverage("Method.FQN")             | Grep test files             |
         | Find config usage               | GetConfigUsage("KEY")                     | Grep "KEY" in all files     |
@@ -188,14 +188,14 @@ public sealed class HelpTools
         Tip: Use SearchCode("partial-name") first to find the correct FQN,
         then pass FQN to graph tools.
 
-        ## .NET DEEP ANALYSIS
-        - GetDiRegistrations(serviceType?, repository?)  — DI container (AddScoped/Transient/Singleton)
-        - GetEntityMapping(entityName?, repository?)     — EF Core entities (DbContext → DbSet → Entity)
-        - GetApiEndpoints(moduleName?, repository?)      — API routes (Minimal API + MVC controllers)
-        - GetDataFlow(endpointRoute)                     — Trace: endpoint → handler → services
-        - GetNuGetAudit(path?)                           — NuGet package versions (.NET only)
+        ## FRAMEWORK & ARCHITECTURE (multi-language unless noted)
+        - GetApiEndpoints(moduleName?, repository?)      — HTTP routes: ASP.NET + Python FastAPI/Flask
+        - GetDiRegistrations(serviceType?, repository?)  — DI: ASP.NET + Java Spring + NestJS @Injectable
         - GetDependencyAudit(path?, ecosystem?)          — Deps across npm/pip/go/cargo/composer/maven/nuget
+        - GetDataFlow(endpointRoute)                     — Trace: endpoint → handler → services
         - GetArchitecture(repository?)                   — Architecture overview (modules + DI + endpoints)
+        - GetEntityMapping(entityName?, repository?)     — EF Core entities (DbContext → DbSet → Entity) [.NET only]
+        - GetNuGetAudit(path?)                           — NuGet package versions [.NET only — prefer GetDependencyAudit]
 
         ## CODE QUALITY & ARCHITECTURE
         - GetTestCoverage(methodFqn)                     — Which tests cover this production method?

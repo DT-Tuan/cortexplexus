@@ -1,7 +1,7 @@
 # ADR-016: Multi-language framework intelligence (Tier B)
 
-**Status:** Proposed
-**Date:** 2026-06-19
+**Status:** Accepted — C1, C2 (Python), C3, C4 shipped; C2 TS (Express/NestJS) + Go/Java/Django endpoints and Spring `@Bean` pending
+**Date:** 2026-06-19 (updated 2026-06-21)
 
 ## Context
 
@@ -92,6 +92,10 @@ carry less cross-stack value than endpoints/DI/deps. Revisit after C1–C3 land.
 | Java | `pom.xml`, `build.gradle` |
 
 ## Rollout (priority by value ÷ effort) — each phase is its own PR series
+
+> **Status (2026-06-21):** C1 ✅ (PR #13), C2 Python ✅ (PR #14), C3 ✅ (PR #15), C4 ✅. All
+> deployed and live-verified on a real FastAPI repo (endpoints) and NestJS repo (DI). Remaining:
+> C2 increment 2 (TS Express/NestJS endpoints), then Go/Java/Django endpoints + Spring `@Bean`.
 
 - **C1 — Dependency audit** *(highest ROI, no AST, no graph)*: `PackageManifestAnalyzer` parsing
   the manifests above → `get_dependency_audit` (+`get_nuget_audit` alias). Pure file parsing,

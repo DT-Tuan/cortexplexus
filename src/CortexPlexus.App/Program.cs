@@ -123,9 +123,12 @@ async Task RunServe(string[] args)
                 "languages, prefer the graph/semantic tools over manual grep for structural " +
                 "questions: search_code (exact name), semantic_search (concept), get_callers / " +
                 "get_callees / get_impact_analysis (relationships). ALWAYS pass repository:\"<name>\" " +
-                "(see list_repositories) to scope. Note: the deep .NET-specific tools " +
-                "(get_di_registrations, get_entity_mapping, get_api_endpoints, get_middleware_pipeline, " +
-                "nuget audit) only return results for C#/.NET repos. A shared cross-project memory " +
+                "(see list_repositories) to scope. Framework-aware tools now span multiple stacks: " +
+                "get_api_endpoints (ASP.NET + Python FastAPI/Flask), get_di_registrations " +
+                "(ASP.NET + Java Spring + NestJS), get_dependency_audit (npm/pip/go/cargo/composer/" +
+                "maven/.NET), get_config_usage (8 languages). Still C#/.NET-only: get_entity_mapping, " +
+                "get_middleware_pipeline, get_nuget_audit (use get_dependency_audit for other " +
+                "ecosystems). A shared cross-project memory " +
                 "store (recall_memory / save_memory, scope:\"all\") spans every indexed repo regardless " +
                 "of language. Call get_help once for the full tool list and language support matrix.";
         })
