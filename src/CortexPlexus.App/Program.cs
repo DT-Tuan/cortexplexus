@@ -8,6 +8,7 @@ using CortexPlexus.Search;
 using CortexPlexus.App.Export;
 using CortexPlexus.App.Indexing;
 using CortexPlexus.App.Watching;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -102,7 +103,10 @@ async Task RunServe(string[] args)
     var builder = WebApplication.CreateBuilder(args);
     builder.Host.UseSerilog();
 
-    ConfigureServices(builder.Services, args);
+    // Pass builder.Configuration so the "Embedding" section (UserSecrets in
+    // Development, env vars in the deployed container) binds — needed for the
+    // opt-in Vertex provider whose API key never lives in appsettings (ADR-017).
+    ConfigureServices(builder.Services, args, builder.Configuration);
 
     if (watch)
     {
@@ -251,7 +255,7 @@ ServiceProvider BuildServices(string[] args)
     return services.BuildServiceProvider();
 }
 
-void ConfigureServices(IServiceCollection services, string[] args)
+void ConfigureServices(IServiceCollection services, string[] args, IConfiguration? configuration = null)
 {
     services.AddLogging(b => b.AddSerilog());
 
@@ -277,8 +281,15 @@ void ConfigureServices(IServiceCollection services, string[] args)
             options.DefaultImportance = imp;
     });
 
-    var ollamaBaseUrl = Environment.GetEnvironmentVariable("Embedding__OllamaBaseUrl") ?? "http://localhost:11434";
-    var ollamaModel = Environment.GetEnvironmentVariable("Embedding__OllamaModel") ?? "nomic-embed-text";
+    // Embedding config: prefer the bound "Embedding" section (UserSecrets in
+    // Development, env vars via WebApplicationBuilder) and fall back to raw
+    // env-var reads for the CLI/BuildServices path that has no IConfiguration.
+    var embeddingSection = configuration?.GetSection("Embedding");
+    string? EmbedCfg(string key, string envVar)
+        => embeddingSection?[key] ?? Environment.GetEnvironmentVariable(envVar);
+
+    var ollamaBaseUrl = EmbedCfg("OllamaBaseUrl", "Embedding__OllamaBaseUrl") ?? "http://localhost:11434";
+    var ollamaModel = EmbedCfg("OllamaModel", "Embedding__OllamaModel") ?? "nomic-embed-text";
 
     // Query expansion (HyDE + multi-query via Ollama)
     var expandEnabled = Environment.GetEnvironmentVariable("QueryExpansion__Enabled") ?? "false";
@@ -291,8 +302,8 @@ void ConfigureServices(IServiceCollection services, string[] args)
         options.OllamaModel = expandModel;
     });
 
-    var embeddingProvider = Environment.GetEnvironmentVariable("Embedding__Provider") ?? "ollama";
-    var embeddingApiKey = Environment.GetEnvironmentVariable("Embedding__ApiKey") ?? "";
+    var embeddingProvider = EmbedCfg("Provider", "Embedding__Provider") ?? "ollama";
+    var embeddingApiKey = EmbedCfg("ApiKey", "Embedding__ApiKey") ?? "";
 
     services.AddCortexPlexusEmbedding(options =>
     {
@@ -301,6 +312,15 @@ void ConfigureServices(IServiceCollection services, string[] args)
         options.Dimensions = 768;
         options.OllamaBaseUrl = ollamaBaseUrl;
         options.OllamaModel = ollamaModel;
+
+        // Vertex AI provider (ADR-017) — opt-in; only consulted when Provider=="vertex".
+        // API key is runtime-only (UserSecrets / Embedding__VertexApiKey env), never committed.
+        options.VertexProjectId = EmbedCfg("VertexProjectId", "Embedding__VertexProjectId");
+        options.VertexLocation = EmbedCfg("VertexLocation", "Embedding__VertexLocation") ?? "global";
+        options.VertexModelId = EmbedCfg("VertexModelId", "Embedding__VertexModelId") ?? "text-embedding-005";
+        options.VertexApiKey = EmbedCfg("VertexApiKey", "Embedding__VertexApiKey");
+        if (int.TryParse(EmbedCfg("VertexInstancesPerCall", "Embedding__VertexInstancesPerCall"), out var ipc))
+            options.VertexInstancesPerCall = ipc;
     });
 
     // AI summary generation (optional, uses LLM)

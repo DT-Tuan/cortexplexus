@@ -16,3 +16,4 @@
 | [014](014-first-class-python-support.md) | First-class Python support (tree-sitter call-graph FQN resolution) | Accepted | 2026-06-14 |
 | [015](015-content-aware-index-freshness.md) | Content-aware index freshness (kill time-based false-STALE) | Accepted (B1 shipped) | 2026-06-18 |
 | [016](016-multi-language-framework-intelligence.md) | Multi-language framework intelligence — Tier B (endpoints/DI/dependency-audit) | Accepted (C1–C4 shipped) | 2026-06-19 |
+| [017](017-vertex-ai-embedding-provider.md) | Vertex AI embedding provider (opt-in, tri-cortex; Ollama stays default) | Accepted | 2026-06-21 |

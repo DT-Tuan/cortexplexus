@@ -12,7 +12,32 @@ Versioning notes:
 
 ## [Unreleased]
 
-_No pending changes._
+### Added
+
+- **Vertex AI embedding provider** (ADR-017) — opt-in third provider branch
+  (`Embedding:Provider=vertex`) for the tri-cortex deployment, alongside the
+  default all-local Ollama and the existing Gemini branch. Moves embedding
+  inference off the I/O-throttled LXC host onto Google Cloud's Vertex
+  `:predict` endpoint.
+  - `VertexEmbeddingService : IEmbeddingService` — express-mode API-key auth on
+    the `?key=` query string (no OAuth); 768-dim via `outputDimensionality` (no
+    DB schema change); Polly retry on 429/408/503/500 + transient, no retry on
+    401, graceful-empty on persistent failure.
+  - `EmbedBatchAsync` **sub-batches** to `VertexInstancesPerCall` (default 5) —
+    one `:predict` call per sub-batch, matching Vertex's per-call instance cap
+    for `text-embedding-004/005` (differs from Gemini's single 100-instance call).
+  - `EmbeddingOptions` gains `VertexProjectId`, `VertexLocation` (default
+    `global` ⇒ bare host, no region prefix), `VertexModelId`,
+    `VertexInstancesPerCall`, `VertexApiKey`. `vertex ⇒ MaxParallelBatches=4`.
+  - `Program.cs` now binds the `Embedding` configuration section (UserSecrets in
+    Development, env vars in the container) in addition to env-var reads, so the
+    Vertex API key stays runtime-only and is never committed.
+
+### Notes
+
+- Switching a repo to Vertex requires a **full re-embed** (different vector
+  space than Ollama `nomic-embed-text`, even though both are 768-dim). The OSS
+  all-local default (`Provider=ollama`) and the Gemini branch are unchanged.
 
 ## [0.8.4] — 2026-04-19
 

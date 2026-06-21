@@ -55,6 +55,37 @@ public class ServiceCollectionExtensionsTests
     }
 
     [Fact]
+    public void Vertex_Provider_AutoDefaults_To_FourParallel()
+    {
+        // Vertex is a managed API (request-throughput bound), so client
+        // parallelism is free throughput — same rationale as Gemini (ADR-017).
+        var opts = ResolveOptions(o =>
+        {
+            o.Provider = "vertex";
+            o.VertexProjectId = "p";
+            o.VertexApiKey = "k";
+        });
+
+        Assert.Equal(4, opts.MaxParallelBatches);
+    }
+
+    [Fact]
+    public void Vertex_Provider_ResolvesVertexEmbeddingService()
+    {
+        var services = new ServiceCollection();
+        services.AddCortexPlexusEmbedding(o =>
+        {
+            o.Provider = "vertex";
+            o.VertexProjectId = "p";
+            o.VertexApiKey = "k";
+        });
+        var sp = services.BuildServiceProvider();
+
+        var svc = sp.GetRequiredService<CortexPlexus.Core.Abstractions.IEmbeddingService>();
+        Assert.IsType<VertexEmbeddingService>(svc);
+    }
+
+    [Fact]
     public void ExplicitValue_OverridesProviderDefault_OnOllama()
     {
         // Power user explicitly sets MaxParallelBatches=8 on Ollama

@@ -32,9 +32,15 @@ public static class ServiceCollectionExtensions
             client.Timeout = TimeSpan.FromMinutes(10);
         });
 
+        services.AddHttpClient(nameof(VertexEmbeddingService));
+
         if (options.Provider.Equals("ollama", StringComparison.OrdinalIgnoreCase))
         {
             services.AddSingleton<IEmbeddingService, OllamaEmbeddingService>();
+        }
+        else if (options.Provider.Equals("vertex", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<IEmbeddingService, VertexEmbeddingService>();
         }
         else
         {
@@ -49,7 +55,7 @@ public static class ServiceCollectionExtensions
     /// Currently handles <see cref="EmbeddingOptions.MaxParallelBatches"/>:
     /// <list type="bullet">
     /// <item>Ollama → 1 (single-thread CPU-bound model; parallelism wastes work via queue contention)</item>
-    /// <item>Gemini → 4 (request-count rate limited; parallelism is free throughput)</item>
+    /// <item>Gemini / Vertex → 4 (managed API, request-throughput bound; parallelism is free throughput)</item>
     /// </list>
     /// Public so unit tests and downstream consumers can apply the same defaults
     /// when constructing options manually (without going through DI).

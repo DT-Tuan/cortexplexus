@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>CortexPlexus.App</RootNamespace>
+    <UserSecretsId>1f89a3ae-f9d5-40c1-bdd3-6870e341a579</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
