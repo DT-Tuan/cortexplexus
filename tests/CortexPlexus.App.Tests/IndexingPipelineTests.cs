@@ -367,4 +367,48 @@ public class IndexingPipelineTests
         var coveredSubtypes = samples.Select(s => s.GetType()).ToHashSet();
         Assert.Equal(allConcreteSubtypes, coveredSubtypes);
     }
+
+    // === HasAnyIndexableFile — the guard that prevents empty phantom repos ===
+
+    [Fact]
+    public void HasAnyIndexableFile_WithSource_ReturnsTrue()
+    {
+        var (dir, cleanup) = CreateTempDir(("app/main.py", "x = 1\n"));
+        try { Assert.True(IndexingPipeline.HasAnyIndexableFile(dir)); }
+        finally { cleanup(); }
+    }
+
+    [Fact]
+    public void HasAnyIndexableFile_OnlyNonSourceFiles_ReturnsFalse()
+    {
+        var (dir, cleanup) = CreateTempDir(("README.json", "{}"), ("data.csv", "a,b"));
+        try { Assert.False(IndexingPipeline.HasAnyIndexableFile(dir)); }
+        finally { cleanup(); }
+    }
+
+    [Fact]
+    public void HasAnyIndexableFile_OnlyVendoredSource_ReturnsFalse()
+    {
+        // A source file only under node_modules / __pycache__ must not count.
+        var (dir, cleanup) = CreateTempDir(
+            ("node_modules/pkg/index.js", "module.exports = 1;"),
+            ("__pycache__/cached.py", "y = 2\n"));
+        try { Assert.False(IndexingPipeline.HasAnyIndexableFile(dir)); }
+        finally { cleanup(); }
+    }
+
+    [Fact]
+    public void HasAnyIndexableFile_MissingPath_ReturnsFalse()
+    {
+        var ghost = Path.Combine(Path.GetTempPath(), $"cortex-ghost-{Guid.NewGuid():N}");
+        Assert.False(IndexingPipeline.HasAnyIndexableFile(ghost));
+    }
+
+    [Fact]
+    public void HasAnyIndexableFile_MarkdownCounts()
+    {
+        var (dir, cleanup) = CreateTempDir(("docs/guide.md", "# Title"));
+        try { Assert.True(IndexingPipeline.HasAnyIndexableFile(dir)); }
+        finally { cleanup(); }
+    }
 }

@@ -45,6 +45,23 @@ public sealed class IndexingPipeline(
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         Report(0, "Detecting project + changed files");
+
+        // Do NOT register a repository for a path that no longer exists or holds no indexable
+        // source. The file watcher re-runs IndexAsync on delete events (a directory being
+        // removed), which would otherwise register an EMPTY phantom repo — and a phantom that
+        // happens to share a real repo's name can hijack repository-scoped resolution
+        // (observed: a 0-symbol "CortexPlexus" at /workspace). Bail before touching the repo store.
+        if (!Directory.Exists(path))
+        {
+            logger.LogInformation("Index path no longer exists, skipping (no repo registered): {Path}", path);
+            return new IndexingStats(sw.Elapsed, 0, 0, 0);
+        }
+        if (!HasAnyIndexableFile(path))
+        {
+            logger.LogInformation("No indexable source under {Path}, skipping (no repo registered).", path);
+            return new IndexingStats(sw.Elapsed, 0, 0, 0);
+        }
+
         // Repository = root directory (like a GitHub repo)
         // All sub-projects inside belong to the same repository
         var repoName = DetectProjectName(path);
@@ -231,8 +248,7 @@ public sealed class IndexingPipeline(
     /// </summary>
     private async Task<IReadOnlyList<string>?> GetChangedFilesAsync(string path, Guid repoId, CancellationToken ct)
     {
-        var extensions = new[] { "*.cs", "*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.md" };
-        var csFiles = extensions
+        var csFiles = IndexableExtensions
             .SelectMany(ext => Directory.GetFiles(path, ext, SearchOption.AllDirectories))
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
                      && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
@@ -267,8 +283,7 @@ public sealed class IndexingPipeline(
 
     private async Task UpdateFileHashesAsync(string path, Guid repoId, CancellationToken ct)
     {
-        var allExts = new[] { "*.cs", "*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.md" };
-        var allFiles = allExts
+        var allFiles = IndexableExtensions
             .SelectMany(ext => Directory.GetFiles(path, ext, SearchOption.AllDirectories))
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
                      && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
@@ -486,6 +501,34 @@ public sealed class IndexingPipeline(
         var sep = Path.DirectorySeparatorChar;
         return path.Contains($"{sep}bin{sep}") || path.Contains($"{sep}obj{sep}")
             || path.Contains($"{sep}node_modules{sep}");
+    }
+
+    // Source/doc extensions the pipeline can index. Single list so the "is there anything to
+    // index?" guard, change detection, and hash bookkeeping stay in sync.
+    private static readonly string[] IndexableExtensions =
+        { "*.cs", "*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.md" };
+
+    /// <summary>
+    /// True if the directory tree contains at least one indexable source/doc file (ignoring
+    /// build/dependency dirs). Used to avoid registering an empty phantom repository for a
+    /// missing/emptied path — enumerates lazily and returns on the first match.
+    /// </summary>
+    internal static bool HasAnyIndexableFile(string path)
+    {
+        if (!Directory.Exists(path)) return false;
+
+        var sep = Path.DirectorySeparatorChar;
+        foreach (var ext in IndexableExtensions)
+        {
+            foreach (var file in Directory.EnumerateFiles(path, ext, SearchOption.AllDirectories))
+            {
+                if (!file.Contains($"{sep}bin{sep}") && !file.Contains($"{sep}obj{sep}")
+                    && !file.Contains($"{sep}node_modules{sep}") && !file.Contains($"{sep}__pycache__{sep}")
+                    && !file.Contains($"{sep}.venv{sep}"))
+                    return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>
