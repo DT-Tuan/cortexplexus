@@ -26,6 +26,19 @@ public sealed class IndexingWorker(
 
                 // For file-level changes, re-index the containing project
                 var projectPath = FindContainingProject(job.FilePath) ?? Path.GetDirectoryName(job.FilePath)!;
+
+                // Never auto-index the watched workspace ROOT itself. It's the container mount,
+                // not a user project — and it is often a checkout of the server's own source
+                // (e.g. /workspace is a CortexPlexus checkout). Indexing it registers a duplicate
+                // "CortexPlexus" repo that shadows the real one (RepoResolver hijack). A file with
+                // no nearer project marker resolves up to the root; skip those.
+                var workspaceRoot = Environment.GetEnvironmentVariable("Workspace__Path");
+                if (IsSamePath(projectPath, workspaceRoot))
+                {
+                    logger.LogDebug("Skipping auto-index of workspace root {Path} for {File}", projectPath, job.FilePath);
+                    continue;
+                }
+
                 logger.LogDebug("Resolved project root {Project} for {File}", projectPath, job.FilePath);
                 await pipeline.IndexAsync(projectPath, stoppingToken);
             }
@@ -34,6 +47,20 @@ public sealed class IndexingWorker(
                 logger.LogError(ex, "Failed to process indexing job: {FilePath}", job.FilePath);
             }
         }
+    }
+
+    /// <summary>
+    /// True if two paths refer to the same directory, ignoring a trailing separator and an
+    /// empty/null comparand. Used to detect when a resolved project path is the watched
+    /// workspace root (which must not be auto-indexed).
+    /// </summary>
+    internal static bool IsSamePath(string path, string? other)
+    {
+        if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(other)) return false;
+        return string.Equals(
+            Path.TrimEndingDirectorySeparator(path),
+            Path.TrimEndingDirectorySeparator(other),
+            StringComparison.Ordinal);
     }
 
     // Files that mark a directory as a project/repository root, so a file change re-indexes the

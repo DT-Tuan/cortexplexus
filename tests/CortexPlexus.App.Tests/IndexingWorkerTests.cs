@@ -106,4 +106,22 @@ public sealed class IndexingWorkerTests : IDisposable
         // No marker anywhere under the temp root → null (worker then uses the file's directory).
         Assert.Null(IndexingWorker.FindContainingProject(file));
     }
+
+    // === IsSamePath — guards against auto-indexing the watched workspace root ===
+
+    [Theory]
+    [InlineData("/workspace", "/workspace", true)]
+    [InlineData("/workspace/", "/workspace", true)]      // trailing separator ignored
+    [InlineData("/workspace", "/workspace/", true)]
+    [InlineData("/workspace/proj", "/workspace", false)] // a project under root is NOT the root
+    [InlineData("/workspace", "/other", false)]
+    public void IsSamePath_MatchesRootIgnoringTrailingSeparator(string path, string other, bool expected)
+        => Assert.Equal(expected, IndexingWorker.IsSamePath(path, other));
+
+    [Fact]
+    public void IsSamePath_NullOrEmptyWorkspace_ReturnsFalse()
+    {
+        Assert.False(IndexingWorker.IsSamePath("/workspace", null));
+        Assert.False(IndexingWorker.IsSamePath("/workspace", ""));
+    }
 }
