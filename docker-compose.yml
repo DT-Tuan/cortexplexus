@@ -7,6 +7,7 @@
 services:
   postgres:
     image: ghcr.io/dt-tuan/cortexplexus-postgres:main
+    restart: unless-stopped   # survive host reboot (LXC has no compose autostart otherwise)
     # To build from source instead: comment out 'image' and uncomment 'build':
     # build:
     #   context: ./docker/postgres
@@ -26,6 +27,7 @@ services:
 
   cortexplexus:
     image: ghcr.io/dt-tuan/cortexplexus:main
+    restart: unless-stopped   # survive host reboot (LXC has no compose autostart otherwise)
     # To build from source instead: comment out 'image' and uncomment 'build':
     # build:
     #   context: .
