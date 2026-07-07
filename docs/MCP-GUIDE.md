@@ -1,7 +1,13 @@
 # CortexPlexus MCP — Guide for AI Agents
 
 > **You are reading this because CortexPlexus MCP Server is available.**
-> It gives you structured code intelligence — call graphs, DI wiring, API routes, class hierarchy, semantic search — in **1 tool call** instead of 10+ grep/read operations.
+> It gives you structured code intelligence — call graphs, API routes, DI wiring, class hierarchy, semantic search — in **1 tool call** instead of 10+ grep/read operations.
+>
+> **⚠️ Multi-language — do NOT skip this server because the project isn't .NET.**
+> Search, call graphs, impact analysis, endpoints, DI, dependency audit, config usage and
+> test coverage work for **C#, TypeScript, JavaScript, Python, Java, Go, Rust, PHP**.
+> Only three tools are C#-only (`GetEntityMapping`, `GetMiddlewarePipeline`, `GetDataFlow`) —
+> their descriptions say so.
 
 ---
 
@@ -9,14 +15,16 @@
 
 | Task | Without MCP | With MCP | Savings |
 |------|-------------|----------|---------|
-| Find callers of a method | Grep name → read 5-10 files → trace manually | `GetCallers("FQN")` | 1 call vs 10+ |
+| Find callers of a function | Grep name → read 5-10 files → trace manually | `GetCallers("app.services.billing.charge")` (Python) / `GetCallers("MyApp.PaymentService.Charge")` (C#) | 1 call vs 10+ |
 | Understand a service | Read 5+ files (class + deps + tests) | `ExploreTopic("ServiceName", depth:"deep")` | 1 call vs 15+ |
-| Trace API request flow | Read Program.cs → find handler → read handler → trace calls | `GetDataFlow("/api/endpoint")` | 1 call vs 8+ |
-| Find DI wiring | Grep "AddScoped" → read Startup.cs → match interfaces | `GetDiRegistrations("IService")` | 1 call vs 5+ |
+| Trace API request flow (.NET) | Read Program.cs → find handler → read handler → trace calls | `GetDataFlow("/api/endpoint")` | 1 call vs 8+ |
+| List API routes (any stack) | Grep decorators/route strings across files | `GetApiEndpoints()` — ASP.NET, FastAPI, Flask, NestJS, Express | 1 call vs 5+ |
+| Find DI wiring | Grep "AddScoped" / `@Injectable` / `@Service` → match interfaces | `GetDiRegistrations("IService")` — ASP.NET, Spring, NestJS | 1 call vs 5+ |
 | Check impact of change | Grep → read callers → read their callers → manual analysis | `GetImpactAnalysis("FQN", depth:3)` | 1 call vs 10+ |
-| Find which tests cover code | Grep test files → read each → check calls | `GetTestCoverage("Method.FQN")` | 1 call vs 5+ |
+| Find which tests cover code | Grep test files → read each → check calls | `GetTestCoverage("Method.FQN")` — xUnit, pytest, Jest, JUnit, Go test, cargo, PHPUnit | 1 call vs 5+ |
 | Understand project structure | Read 20+ files → mentally assemble | `OnboardProject("repo")` | 1 call vs 20+ |
-| Find config usage | Grep "ConnectionString" across all files | `GetConfigUsage("ConnectionStrings")` | 1 call vs 5+ |
+| Audit dependencies (any ecosystem) | Read package.json / requirements.txt / go.mod / *.csproj by hand | `GetDependencyAudit()` — npm, pip, go, cargo, composer, maven, nuget | 1 call vs 5+ |
+| Find config usage | Grep "ConnectionString" / `process.env` / `os.environ` across all files | `GetConfigUsage("KEY")` — 8 languages | 1 call vs 5+ |
 
 **Rule of thumb:** If you're about to grep for a class/method name, use `SearchCode` or `ExploreTopic` instead. If you're about to read multiple files to trace a flow, use a graph traversal tool.
 
@@ -124,7 +132,7 @@ If you're hacking on CortexPlexus, you're the rare case where the IDE *and* the 
 ```
 1. ActivateAgent(projectPath: "<workspace>")   → Install + start local indexing agent
 2. ListRepositories()                           → Verify project is indexed (check the Health: line)
-3. GetHelp("tools")                             → Learn all 26 available tools
+3. GetHelp("tools")                             → Learn all 34 available tools
 ```
 
 That's it. The agent indexes your code locally (source never leaves your machine), and `GetHelp()` teaches you everything else.
@@ -150,8 +158,8 @@ The Health line on every entry is your early-warning signal: `OK` means the repo
 | Check change impact | `GetImpactAnalysis("FQN")` | Manual grep + trace |
 | Find interface implementations | `GetImplementations("IService")` | Grep class name |
 | See inheritance tree | `GetClassHierarchy("ClassName")` | Read multiple files |
-| View DI registrations | `GetDiRegistrations()` | Read Program.cs/Startup.cs |
-| List API endpoints | `GetApiEndpoints()` | Grep "MapGet" or "[HttpGet]" |
+| View DI registrations | `GetDiRegistrations()` | Read Program.cs / Startup.cs / @Module files |
+| List API endpoints | `GetApiEndpoints()` | Grep "MapGet" / "@app.get" / "@Get()" / "router.post" |
 | Trace request flow | `GetDataFlow("/api/route")` | Read endpoint → handler → service chain |
 | Check test coverage | `GetTestCoverage("Method.FQN")` | Grep test files |
 | Find config dependencies | `GetConfigUsage("KEY")` | Grep "KEY" across all files |
@@ -167,7 +175,7 @@ The Health line on every entry is your early-warning signal: `OK` means the repo
 
 ---
 
-## 5. Tool Quick Reference (30 tools)
+## 5. Tool Quick Reference (34 tools)
 
 For detailed parameters and examples, call `GetHelp("tools")`. For the memory-tools playbook specifically, call `GetHelp("memory")`.
 
@@ -252,6 +260,7 @@ Tools using FQN (GetCallers, GetCallees, etc.) don't need `repository` — FQN i
 |---------|-----|
 | "No results" | Project not indexed → call `ActivateAgent()` first |
 | FQN not found | Use `SearchCode("partial-name")` to find correct FQN |
-| Semantic search fails | Ollama not running → `curl http://localhost:11434/api/tags` |
+| Semantic search fails | Embedding provider down. Default Ollama: `curl http://localhost:11434/api/tags`. Gemini/Vertex: check API key + network on the server (`docker logs cortexplexus-cortexplexus-1 \| grep -i embed`) |
 | Connection refused | Server not running → `docker compose up -d` on server |
 | Tools not visible | Wrong config file or missing session restart |
+| "This project isn't .NET, should I skip?" | **No.** All search/graph/framework tools are multi-language (see the callout at the top). Index it and query normally |

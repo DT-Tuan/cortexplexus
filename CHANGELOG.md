@@ -12,6 +12,24 @@ Versioning notes:
 
 ## [Unreleased]
 
+### Docs
+
+- **Strategic direction set (docs-only)** — [`docs/VISION.md`](docs/VISION.md) (CP as
+  "Context OS" for coding agents: 4 product principles, gap analysis, Tier 1–3 roadmap),
+  [`docs/research/MEMORY-V2-ASSESSMENT.md`](docs/research/MEMORY-V2-ASSESSMENT.md)
+  (memory subsystem audit vs Mem0/Zep/Letta/Generative-Agents), and **11 proposed ADRs
+  (018–028)**: embedding-space versioning, `get_context_pack`, read-only `graph_query`,
+  compact tool output, edge bulk-load v2, watch lifecycle self-service, memory
+  reliability / write-reconciliation / lifecycle / code-binding, and the
+  language-neutral adoption surface. ROADMAP gains a "Vision Tier 1" tracking table.
+- **First-contact surfaces de-.NET-ified (ADR-028 move 1)** — `AGENT-TEMPLATE.md` now
+  leads with 8-language support and reframes the dotnet runtime as the *agent's* runtime
+  (not a project requirement); `INTRODUCTION(-VI).md` and `README.md` lead
+  multi-language with C#/Roslyn presented as the deepest tier; `MCP-GUIDE.md` gains a
+  "do NOT skip this server because the project isn't .NET" callout, mixed-language
+  examples, and provider-aware troubleshooting. Stale counts fixed everywhere
+  (26/30 → 34 tools, 693 → 800+ tests).
+
 ### Added
 
 - **Vertex AI embedding provider** (ADR-017) — opt-in third provider branch
