@@ -185,8 +185,9 @@ public sealed class ExploreTools
     /// Single tool call replaces: GetArchitecture + GetApiEndpoints + GetDiRegistrations + GetEntityMapping.
     /// </summary>
     [McpServerTool, Description(
-        "Get a complete codebase overview for onboarding: architecture, API endpoints, " +
-        "DI registrations, entity mappings, and NuGet packages — all in one call.")]
+        "Get a complete codebase overview for onboarding — one call: architecture, API " +
+        "endpoints (ASP.NET/FastAPI/Flask/NestJS/Express) and DI registrations. On C#/.NET " +
+        "projects it also includes EF Core entity mappings. Works for any indexed language.")]
     public static async Task<string> OnboardProject(
         [Description("Repository name (use ListRepositories to see available)")] string repository,
         IGraphStore graphStore = default!,

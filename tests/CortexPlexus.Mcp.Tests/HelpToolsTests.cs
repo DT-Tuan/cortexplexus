@@ -1,3 +1,4 @@
+using System.Linq;
 using CortexPlexus.App.Mcp.Tools;
 
 namespace CortexPlexus.Mcp.Tests;
@@ -106,5 +107,37 @@ public sealed class HelpToolsTests
         var result = HelpTools.GetHelp("all");
         Assert.Contains("SaveMemory", result);
         Assert.Contains("RecallMemory", result);
+    }
+
+    // === ADR-028: tool-count drift guard ===
+    // The Tool Reference header used to hard-code "(30 tools)" and silently drifted
+    // to a stale count as tools were added (34 by the time it was caught). The count
+    // is now derived from the assembly; this test fails if it ever drifts again.
+    [Fact]
+    public void GetHelp_ToolReference_CountMatchesActualToolCount()
+    {
+        var actualToolCount = typeof(HelpTools).Assembly.GetTypes()
+            .SelectMany(t => t.GetMethods(
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+            .Count(m => m.GetCustomAttributes(
+                typeof(ModelContextProtocol.Server.McpServerToolAttribute), inherit: false).Length > 0);
+
+        var result = HelpTools.GetHelp("tools");
+
+        Assert.Contains($"# Tool Reference ({actualToolCount} tools)", result);
+    }
+
+    // === ADR-028: the help must not teach the deprecated UUID scoping path ===
+    // v0.8.3 made `repository` (NAME) the preferred way to scope project memories;
+    // the help examples used to teach `scopeId: "<repoId>"`, actively steering agents
+    // to the worse path. Guard that the examples lead with `repository`.
+    [Fact]
+    public void GetHelp_Memory_PrefersRepositoryNameOverScopeIdUuid()
+    {
+        var result = HelpTools.GetHelp("all");
+
+        Assert.Contains("repository:", result);
+        Assert.DoesNotContain("scopeId: \"<repoId>\"", result);
+        Assert.DoesNotContain("scopeId:\"<repoId>\"", result);
     }
 }

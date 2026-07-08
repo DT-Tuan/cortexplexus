@@ -124,7 +124,7 @@ public sealed class GraphTraversalTools
 
     [McpServerTool, Description("Find all methods that call a specified method")]
     public static async Task<string> GetCallers(
-        [Description("Fully qualified method name (e.g. 'Namespace.Class.Method')")] string? methodFqn = null,
+        [Description("Fully qualified name in the language's own convention — e.g. 'MyApp.Services.PaymentService.Charge' (C#), 'app.services.payment.charge' (Python), 'payment.Service.Charge' (Go)")] string? methodFqn = null,
         [Description("Depth of call chain to traverse (1-5)")] int depth = 1,
         IGraphStore graphStore = default!,
         ContextCompressor compressor = default!)
@@ -145,7 +145,7 @@ public sealed class GraphTraversalTools
 
     [McpServerTool, Description("Find all methods called by a specified method")]
     public static async Task<string> GetCallees(
-        [Description("Fully qualified method name (e.g. 'Namespace.Class.Method')")] string? methodFqn = null,
+        [Description("Fully qualified name in the language's own convention — e.g. 'MyApp.Services.PaymentService.Charge' (C#), 'app.services.payment.charge' (Python), 'payment.Service.Charge' (Go)")] string? methodFqn = null,
         [Description("Depth of call chain to traverse (1-5)")] int depth = 1,
         IGraphStore graphStore = default!,
         ContextCompressor compressor = default!)
@@ -190,7 +190,7 @@ public sealed class GraphTraversalTools
 
     [McpServerTool, Description("Find all implementations of an interface")]
     public static async Task<string> GetImplementations(
-        [Description("Fully qualified interface name (e.g. 'App.Interfaces.IFoo')")] string? interfaceFqn = null,
+        [Description("Fully qualified interface/protocol/trait name — e.g. 'App.Interfaces.IFoo' (C#), 'myapp.ports.Repository' (Python/Go)")] string? interfaceFqn = null,
         IGraphStore graphStore = default!,
         ContextCompressor compressor = default!)
     {
