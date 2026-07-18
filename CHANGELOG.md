@@ -14,21 +14,19 @@ Versioning notes:
 
 ### Docs
 
-- **Strategic direction set (docs-only)** — [`docs/VISION.md`](docs/VISION.md) (CP as
-  "Context OS" for coding agents: 4 product principles, gap analysis, Tier 1–3 roadmap),
-  [`docs/research/MEMORY-V2-ASSESSMENT.md`](docs/research/MEMORY-V2-ASSESSMENT.md)
-  (memory subsystem audit vs Mem0/Zep/Letta/Generative-Agents), and **11 proposed ADRs
-  (018–028)**: embedding-space versioning, `get_context_pack`, read-only `graph_query`,
-  compact tool output, edge bulk-load v2, watch lifecycle self-service, memory
-  reliability / write-reconciliation / lifecycle / code-binding, and the
-  language-neutral adoption surface. ROADMAP gains a "Vision Tier 1" tracking table.
-- **First-contact surfaces de-.NET-ified (ADR-028 move 1)** — `AGENT-TEMPLATE.md` now
-  leads with 8-language support and reframes the dotnet runtime as the *agent's* runtime
-  (not a project requirement); `INTRODUCTION(-VI).md` and `README.md` lead
-  multi-language with C#/Roslyn presented as the deepest tier; `MCP-GUIDE.md` gains a
-  "do NOT skip this server because the project isn't .NET" callout, mixed-language
-  examples, and provider-aware troubleshooting. Stale counts fixed everywhere
+- **First-contact docs are now language-neutral** — the introduction/usage docs led with
+  .NET (Roslyn, EF Core, dotnet-SDK prereq, C#-only FQN examples), which made AI agents on
+  Python/TypeScript/Go projects assume CortexPlexus was ".NET-only" and skip it.
+  `AGENT-TEMPLATE.md` now leads with 8-language support and reframes the dotnet runtime as
+  the *agent binary's* runtime (not a project requirement); `INTRODUCTION(-VI).md` and
+  `README.md` lead multi-language with C#/Roslyn presented as the deepest tier;
+  `MCP-GUIDE.md` gains a "do NOT skip this server because the project isn't .NET" callout,
+  mixed-language examples, and provider-aware troubleshooting. Stale counts fixed
   (26/30 → 34 tools, 693 → 800+ tests).
+- **Docs split into public vs internal** — operational + introduction docs remain in the
+  public repo; internal strategy/planning/research docs (plans, research notes, specs,
+  benchmark logs, forward-looking ADRs) are now git-ignored and kept out of the published
+  repo. Architectural ADRs 001–017 (documenting the shipped system) stay public.
 
 ### Added
 
