@@ -15,6 +15,8 @@
 | **9** | Multi-Language Expansion | 1 day | ✅ Complete |
 | **10** | Code Intelligence: Docs, Summaries & Test Mapping | 1 day | ✅ Complete |
 | **Tier B** | Multi-Language Framework Intelligence (ADR-016) | — | ✅ C1–C4 shipped (2026-06-21) |
+| **Vision Tier 1** | Trust & Economy (ADR-018…024) | — | 📐 ADRs proposed (2026-07-07) |
+| **Memory v2** | Shared trustworthy work-memory (ADR-024…027) | — | 📐 ADRs proposed (2026-07-07) |
 
 ---
 
@@ -412,6 +414,32 @@ Default endpoints when running locally with `docker compose up -d`:
 | Docker Image | 906MB (aspnet-chiseled) |
 | Transfer Size | 113MB (gzipped) |
 | CortexPlexus self-index | 2070 symbols, 6525 relationships |
+
+---
+
+## Vision Tier 1 — "Trust & Economy" (2026H2)
+
+**North star:** [VISION.md](VISION.md) — token là tiền tệ, agent là người dùng, kết quả
+tự khai độ tin cậy, bản đồ sống. Mỗi item dưới đây có ADR riêng (docs/decisions/) với
+Context/Decision/Verification đầy đủ; thứ tự là thứ tự triển khai đề xuất.
+
+| # | Item | ADR | Status | Ghi chú |
+|---|------|-----|--------|---------|
+| 1 | Embedding-space versioning (vá P0 cross-space silent mismatch) | [018](decisions/018-embedding-space-versioning.md) | 📐 Proposed | Fleet đang split vertex/ollama |
+| 2 | Memory M0 — error envelope + degraded save + backfill | [024](decisions/024-memory-reliability-degraded-save.md) | 📐 Proposed | Từ sự cố 2026-07-07 |
+| 3 | Edge upsert bulk-load v2 (staged apply; 673s → ~35s dự phóng) | [022](decisions/022-edge-upsert-bulk-load-v2.md) | 📐 Proposed | Wire bump agent 1.2.0 |
+| 4 | Watch lifecycle self-service (`agent install`, heartbeat, 🟢/🔴/⚪) | [023](decisions/023-watch-lifecycle-self-service.md) | 📐 Proposed | Hoàn thiện ADR-015 B3; chung 1.2.0 với #3 |
+| 5 | Compact-by-default output + token budget CI harness | [021](decisions/021-compact-tool-output.md) | 📐 Proposed | list_repositories ~1.3K → ~300 tokens |
+| 6 | `graph_query` — read-only open Cypher | [020](decisions/020-readonly-graph-query-tool.md) | 📐 Proposed | 5-layer guard; câu hỏi thứ 31 = 0 code |
+| 7 | Memory M1+M2 — reconciliation, `update_memory`, hybrid recall | [025](decisions/025-memory-write-reconciliation-hybrid-recall.md) | 📐 Proposed | |
+| 8 | Memory M3 — status/invalidation, archiver, export/backup | [026](decisions/026-memory-lifecycle-invalidation.md) | 📐 Proposed | |
+| 9 | `get_context_pack` — 1 call orient ≤2K tokens | [019](decisions/019-context-pack-tool.md) | 📐 Proposed | ROI cao nhất; tiêu thụ #1/#4/#5/#7 |
+| 10 | Memory M4+M5 — code-drift binding, maintenance report | [027](decisions/027-memory-code-binding-consolidation.md) | 📐 Proposed | Moat riêng: memory biết code đổi |
+| 11 | Language-neutral adoption surface (template/docs/descriptions, languages-per-repo, deprecate nu_get) | [028](decisions/028-language-neutral-adoption-surface.md) | 📐 Proposed | Docs-heavy — chạy song song #2-#4 được |
+
+**Tier 2 trở đi** (diff-impact, cross-repo topology, GraphRAG-lite, eval harness,
+temporal graph, multi-agent blackboard): xem [VISION.md §6](VISION.md) — sẽ mở ADR khi
+đến lượt. Phân tích memory đầy đủ: [research/MEMORY-V2-ASSESSMENT.md](research/MEMORY-V2-ASSESSMENT.md).
 
 ---
 

@@ -42,13 +42,26 @@ artifacts/
 .git-backup/
 deploy.sh
 
-# Internal specification + planning docs (not public)
+# Internal dev docs — strategy / planning / research / specs. NOT published to the
+# public GitHub repo. Operational + intro docs (INTRODUCTION, MCP-GUIDE, AGENT-TEMPLATE,
+# API, ARCHITECTURE, HEALTH-METRICS, MEMORY-SYSTEM, PITCH-DECK, TESTING, LOCAL-DEV-SETUP,
+# runbooks/, ROADMAP) stay public. These files still live in the working tree — back them
+# up out-of-band (they are not in git). Add any new internal doc here.
 SPEC.md
 PROJECT-SPEC.md
 docs/SPEC.md
 docs/OVERVIEW.md
-docs/ADVANCED-RAG-TECHNIQUES.md
 docs/TEST-PLAN.md
 docs/BENCHMARK.md
 docs/VALIDATION-*.md
+docs/VISION.md
+docs/PLAN-*.md
 docs/specs/
+docs/research/
+docs/benchmark-results/
+# ADRs 001-017 are public — they document the shipped system. ADRs 018+ are
+# forward-looking internal strategy and are NOT published.
+docs/decisions/018-*.md
+docs/decisions/019-*.md
+docs/decisions/02[0-9]-*.md
+docs/decisions/0[3-9][0-9]-*.md

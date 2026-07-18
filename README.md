@@ -2,13 +2,13 @@
 
 **Open-source Code Intelligence Platform** — turn your source code into a Knowledge Graph and serve structured context to AI assistants over the [Model Context Protocol](https://modelcontextprotocol.io/).
 
-Pull, `docker compose up`, connect your IDE, done. **100% free and self-hosted.**
+**Works with C#, TypeScript, JavaScript, Python, Java, Go, Rust, PHP.** Pull, `docker compose up`, connect your IDE, done. **100% free and self-hosted.**
 
 [![Build & Test](https://github.com/DT-Tuan/CortexPlexus/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/DT-Tuan/CortexPlexus/actions/workflows/build-and-test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
-[![Tests](https://img.shields.io/badge/tests-693%20passing-brightgreen)](docs/TESTING.md)
-[![MCP](https://img.shields.io/badge/MCP-26%20tools-blue)](https://modelcontextprotocol.io/)
+[![Tests](https://img.shields.io/badge/tests-800%2B%20passing-brightgreen)](docs/TESTING.md)
+[![MCP](https://img.shields.io/badge/MCP-34%20tools-blue)](https://modelcontextprotocol.io/)
 
 ---
 
@@ -16,7 +16,7 @@ Pull, `docker compose up`, connect your IDE, done. **100% free and self-hosted.*
 
 AI coding assistants (Claude, Cursor, Copilot) read your files as plain text — they don't understand the structure of your code. CortexPlexus fixes that by:
 
-1. **Parsing** source with Roslyn (C# deep semantic) + Tree-sitter (TS / JS / Python / Java / Go / Rust / PHP)
+1. **Parsing** source with Tree-sitter (TypeScript / JavaScript / Python / Java / Go / Rust / PHP) + a deep semantic tier for C# via Roslyn
 2. **Building** a Knowledge Graph (classes, methods, call graph, DI registrations, API routes, EF Core entities, config keys, test coverage…)
 3. **Searching** with hybrid Graph + Vector + BM25 fusion
 4. **Serving** structured context to AI agents over MCP — one tool call instead of 10+ grep/read operations
@@ -138,16 +138,17 @@ You can also open this file from inside Antigravity: Agent panel `...` → **MCP
 
 After creating the file, **restart your IDE session** — no client hot-reloads MCP config.
 
-> **Full MCP guide with all 30 tools, usage examples, and troubleshooting:**
+> **Full MCP guide with all 34 tools, usage examples, and troubleshooting:**
 > **[`docs/MCP-GUIDE.md`](docs/MCP-GUIDE.md)** — read this after connecting your IDE.
 
 ---
 
 ## Features
 
-- **30 MCP tools** — search, navigation, .NET deep analysis, data flow, test coverage, dead code, circular deps, composite (`OnboardProject`, `ExploreTopic`), and opt-in agent memory (`SaveMemory`, `RecallMemory`, `ListMemories`, `ForgetMemory`)
-- **Multi-language** — C# (Roslyn deep semantic) + TypeScript / JavaScript / Python / Java / Go / Rust / PHP / Markdown
-- **.NET deep analysis** — DI registrations, EF Core entity mappings, Minimal API routes (with `[controller]` token expansion), middleware pipeline order, NuGet audit
+- **34 MCP tools** — search & navigation (all languages), framework intelligence (endpoints/DI/dependency-audit across stacks), a .NET deep tier, data flow, test coverage, dead code, circular deps, composite (`OnboardProject`, `ExploreTopic`), and opt-in cross-project agent memory (`SaveMemory`, `RecallMemory`, `ListMemories`, `ForgetMemory`)
+- **Multi-language** — TypeScript / JavaScript / Python / Java / Go / Rust / PHP / Markdown via Tree-sitter + C# deep semantic via Roslyn
+- **Framework intelligence across stacks** — API endpoints (ASP.NET, FastAPI, Flask, NestJS, Express), DI registrations (ASP.NET, Spring, NestJS), dependency audit (npm / pip / go / cargo / composer / maven / nuget), config usage (8 languages)
+- **.NET deep tier** — EF Core entity mappings, Minimal API routes (with `[controller]` token expansion), middleware pipeline order, endpoint→DB data flow
 - **Triple hybrid search** — Apache AGE Cypher (graph) + pgvector HNSW (vector) + tsvector BM25 (full-text) + RRF fusion
 - **Context tracking edges** — `Calls`, `Implements`, `Inherits`, `DependsOn`, `UsesType`, `HandledBy`, `MapsTo`, `ReadsConfig`, `Throws`, `Catches`, `TestCovers`, `Subscribes`, `Publishes`, `HttpCalls`, `PipelineOrder`
 - **Local indexing agent** — source code stays on your dev machine; only metadata is sent to the server
@@ -226,7 +227,7 @@ All three project-scoped memory tools accept either `repository` NAME or `scopeI
 ┌────────────────┴────────────────────────┐
 │   CortexPlexus.App (.NET 10 monolith)   │
 │                                          │
-│  • MCP Server (30 tools)                 │
+│  • MCP Server (34 tools)                 │
 │  • REST API (10 endpoints)               │
 │  • Roslyn parser (C# deep)               │
 │  • Tree-sitter parsers (8 languages)     │
@@ -254,7 +255,7 @@ CortexPlexus/
 │   ├── CortexPlexus.Embedding/    # Gemini + Ollama providers
 │   ├── CortexPlexus.Agent/        # Local indexing agent CLI
 │   └── CortexPlexus.App/          # Monolith entry: MCP server, REST API, CLI
-├── tests/                          # 693 tests across 10 projects
+├── tests/                          # 800+ tests across 12 projects
 ├── docs/
 │   ├── ARCHITECTURE.md            # System architecture
 │   ├── MCP-GUIDE.md               # AI agent connection guide
