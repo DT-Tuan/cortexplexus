@@ -15,18 +15,40 @@ public sealed class ProjectFileWatcher : IDisposable
     private static readonly string[] ExcludedDirs =
         ["bin", "obj", "node_modules", "__pycache__", ".venv", ".git", ".vs", ".idea", "dist", "build", "out"];
 
+    /// <summary>
+    /// Consecutive flush failures after which the watcher gives up and fails the watch
+    /// session. A supervisor (systemd Restart=) then recycles the whole process — the
+    /// alternative is the zombie-watch failure mode: a process that stays "active
+    /// (running)" for weeks while every flush dies on the same exception and the
+    /// server-side index silently freezes.
+    /// </summary>
+    internal const int MaxConsecutiveFlushFailures = 5;
+
     private readonly FileSystemWatcher _watcher;
     private readonly ILogger _logger;
     private readonly HashSet<string> _pendingChanges = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
-    private readonly TimeSpan _debounceDelay = TimeSpan.FromSeconds(3);
+    private readonly TimeSpan _debounceDelay;
     private CancellationTokenSource? _debounceCts;
     private readonly string _rootPath;
     private readonly IReadOnlyList<string> _ignorePatterns;
+    private int _consecutiveFlushFailures;
+    private readonly TaskCompletionSource<Exception> _fatal =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public ProjectFileWatcher(string path, ILogger logger)
+    /// <summary>Current consecutive flush-failure count (0 = healthy). Reported in heartbeats.</summary>
+    public int ConsecutiveFlushFailures => Volatile.Read(ref _consecutiveFlushFailures);
+
+    /// <summary>
+    /// Raised after every flush attempt with the outcome: null on success, the exception
+    /// on failure. Used by the watch host to push a heartbeat per flush.
+    /// </summary>
+    public event Action<Exception?>? FlushCompleted;
+
+    public ProjectFileWatcher(string path, ILogger logger, TimeSpan? debounceDelay = null)
     {
         _logger = logger;
+        _debounceDelay = debounceDelay ?? TimeSpan.FromSeconds(3);
         _rootPath = Path.GetFullPath(path);
         _ignorePatterns = IgnorePatternMatcher.LoadFromDirectory(_rootPath);
         if (_ignorePatterns.Count > 0)
@@ -58,8 +80,18 @@ public sealed class ProjectFileWatcher : IDisposable
 
         try
         {
-            // Keep running until cancelled
-            await Task.Delay(Timeout.Infinite, ct);
+            // Keep running until cancelled — or until repeated flush failures make
+            // continuing pointless (see MaxConsecutiveFlushFailures).
+            var stopped = Task.Delay(Timeout.Infinite, ct);
+            var finished = await Task.WhenAny(stopped, _fatal.Task);
+            if (finished == _fatal.Task)
+            {
+                var cause = await _fatal.Task;
+                throw new WatchFailedException(
+                    $"Watch aborted after {MaxConsecutiveFlushFailures} consecutive flush failures. " +
+                    "Exiting so a supervisor (systemd Restart=) can recycle the process.", cause);
+            }
+            await stopped; // propagate OperationCanceledException for graceful stop
         }
         catch (OperationCanceledException)
         {
@@ -129,10 +161,24 @@ public sealed class ProjectFileWatcher : IDisposable
         lock (_lock)
         {
             _pendingChanges.Add(filePath);
+        }
+        // Reset debounce timer
+        ScheduleFlush(_debounceDelay);
+    }
 
-            // Reset debounce timer
-            _debounceCts?.Cancel();
-            _debounceCts?.Dispose();
+    private void ScheduleFlush(TimeSpan delay)
+    {
+        lock (_lock)
+        {
+            try
+            {
+                _debounceCts?.Cancel();
+                _debounceCts?.Dispose();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Watcher already disposed (shutdown) — a late retry landing here is inert.
+            }
             _debounceCts = new CancellationTokenSource();
             var token = _debounceCts.Token;
 
@@ -140,7 +186,7 @@ public sealed class ProjectFileWatcher : IDisposable
             {
                 try
                 {
-                    await Task.Delay(_debounceDelay, token);
+                    await Task.Delay(delay, token);
                     await FlushChangesAsync();
                 }
                 catch (OperationCanceledException)
@@ -151,7 +197,8 @@ public sealed class ProjectFileWatcher : IDisposable
         }
     }
 
-    private async Task FlushChangesAsync()
+    // Internal so tests can drive flush outcomes without waiting on real FS events.
+    internal async Task FlushChangesAsync()
     {
         IReadOnlyList<string> changes;
         lock (_lock)
@@ -161,18 +208,64 @@ public sealed class ProjectFileWatcher : IDisposable
             _pendingChanges.Clear();
         }
 
-        if (_onBatchChanged is not null)
+        if (_onBatchChanged is null) return;
+
+        try
         {
-            try
+            await _onBatchChanged(changes);
+            Volatile.Write(ref _consecutiveFlushFailures, 0);
+            FlushCompleted?.Invoke(null);
+        }
+        catch (Exception ex)
+        {
+            var failures = Interlocked.Increment(ref _consecutiveFlushFailures);
+
+            // Re-queue the failed batch. The old code dropped it here — combined with
+            // the swallow-and-continue below, that produced the zombie watch: weeks of
+            // detected-but-never-uploaded changes with no error signal anywhere.
+            lock (_lock)
             {
-                await _onBatchChanged(changes);
+                foreach (var change in changes)
+                    _pendingChanges.Add(change);
             }
-            catch (Exception ex)
+
+            _logger.LogError(ex,
+                "Error processing {Count} file changes (consecutive failure {Failures}/{Max}) — batch re-queued",
+                changes.Count, failures, MaxConsecutiveFlushFailures);
+            FlushCompleted?.Invoke(ex);
+
+            if (failures >= MaxConsecutiveFlushFailures)
             {
-                _logger.LogError(ex, "Error processing {Count} file changes", changes.Count);
+                _logger.LogCritical(
+                    "Watch flush failed {Max} times in a row — giving up so the supervisor can restart the agent.",
+                    MaxConsecutiveFlushFailures);
+                _fatal.TrySetResult(ex);
+                return;
             }
+
+            // Retry with backoff: 30s, 60s, 120s, 240s. A new FS event resets the
+            // schedule to the normal 3s debounce, which merges into the same batch.
+            var backoff = TimeSpan.FromSeconds(Math.Min(30 * Math.Pow(2, failures - 1), 300));
+            _logger.LogInformation("Retrying flush in {Delay:F0}s...", backoff.TotalSeconds);
+            ScheduleFlush(backoff);
         }
     }
+
+    // Test hooks — drive the flush pipeline without real FileSystemWatcher events.
+    internal void EnqueueChangeForTest(string filePath)
+    {
+        lock (_lock) { _pendingChanges.Add(filePath); }
+    }
+
+    internal int PendingChangeCountForTest
+    {
+        get { lock (_lock) { return _pendingChanges.Count; } }
+    }
+
+    internal void SetCallbackForTest(Func<IReadOnlyList<string>, Task> onBatchChanged)
+        => _onBatchChanged = onBatchChanged;
+
+    internal Task<Exception> FatalTaskForTest => _fatal.Task;
 
     internal static bool IsWatchedFile(string filePath)
     {
@@ -188,6 +281,18 @@ public sealed class ProjectFileWatcher : IDisposable
     public void Dispose()
     {
         _watcher.Dispose();
-        _debounceCts?.Dispose();
+        lock (_lock)
+        {
+            _debounceCts?.Cancel();
+            _debounceCts?.Dispose();
+        }
     }
 }
+
+/// <summary>
+/// Thrown by <see cref="ProjectFileWatcher.WatchAsync"/> when repeated flush failures
+/// make continuing pointless. The watch host converts this into a non-zero exit code
+/// so a supervisor (systemd Restart=) recycles the process instead of leaving a
+/// zombie watch running.
+/// </summary>
+public sealed class WatchFailedException(string message, Exception inner) : Exception(message, inner);

@@ -674,6 +674,33 @@ public sealed class AgeGraphStore(NpgsqlDataSource dataSource, ILogger<AgeGraphS
         await ExecuteCypher(conn, cypher, ct);
     }
 
+    public async Task DeleteByFilePathsAsync(
+        Guid repoId, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
+    {
+        if (filePaths.Count == 0) return;
+
+        var repo = EscapeCypher(repoId.ToString());
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await SetAgePath(conn, ct);
+
+        // Chunked like DeleteEdgesBySourceFqns — file paths are long, keep the
+        // Cypher string bounded. DETACH removes the dead vertices' edges too, so
+        // a deleted method stops appearing in get_callers/get_callees entirely.
+        foreach (var chunk in Chunk(filePaths.ToList(), 200))
+        {
+            var sb = new System.Text.StringBuilder(chunk.Count * 100);
+            sb.Append("MATCH (n {repo_id: '").Append(repo).Append("'}) WHERE n.file_path IN [");
+            for (var i = 0; i < chunk.Count; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append('\'').Append(EscapeCypher(chunk[i])).Append('\'');
+            }
+            sb.Append("] DETACH DELETE n");
+            await ExecuteCypher(conn, sb.ToString(), ct);
+        }
+    }
+
     // --- Phase 3: .NET Deep Analysis queries ---
 
     public async Task<IReadOnlyList<SearchResult>> QueryDiRegistrationsAsync(

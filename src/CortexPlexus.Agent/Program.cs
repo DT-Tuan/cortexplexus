@@ -77,12 +77,46 @@ async Task<int> RunWatch(string[] args, ILogger log)
     // Also check for updates periodically
     var updater = new AgentUpdater(server, log);
 
-    await watcher.WatchAsync(async changedFiles =>
-    {
-        log.LogInformation("Detected {Count} changed files, indexing...", changedFiles.Count);
-        await indexer.IndexFilesAsync(path, changedFiles);
-    }, cts.Token);
+    // Heartbeats: one now (right after the initial index), one after every flush
+    // outcome, and one every 5 minutes while idle. The server renders these in
+    // list_repositories as Watch: ACTIVE / FAILING / DISCONNECTED, so a watch that
+    // is alive but not uploading is visible instead of silently serving stale data.
+    await indexer.PostHeartbeatAsync(watcher.ConsecutiveFlushFailures, lastError: null, cts.Token);
 
+    watcher.FlushCompleted += error =>
+        _ = indexer.PostHeartbeatAsync(watcher.ConsecutiveFlushFailures, error?.Message, cts.Token);
+
+    var heartbeatLoop = Task.Run(async () =>
+    {
+        while (!cts.Token.IsCancellationRequested)
+        {
+            try { await Task.Delay(TimeSpan.FromMinutes(5), cts.Token); }
+            catch (OperationCanceledException) { break; }
+            await indexer.PostHeartbeatAsync(watcher.ConsecutiveFlushFailures, lastError: null, cts.Token);
+        }
+    });
+
+    try
+    {
+        await watcher.WatchAsync(async changedFiles =>
+        {
+            log.LogInformation("Detected {Count} changed files, indexing...", changedFiles.Count);
+            await indexer.IndexFilesAsync(path, changedFiles);
+        }, cts.Token);
+    }
+    catch (WatchFailedException ex)
+    {
+        // Repeated flush failures — exit non-zero so systemd (Restart=on-failure /
+        // always) recycles the agent instead of leaving a zombie watch running.
+        log.LogCritical(ex, "Watch session failed: {Message}", ex.Message);
+        await indexer.PostHeartbeatAsync(watcher.ConsecutiveFlushFailures, ex.InnerException?.Message ?? ex.Message);
+        cts.Cancel();
+        PidManager.RemovePidFile(name);
+        return 2;
+    }
+
+    cts.Cancel();
+    await heartbeatLoop;
     PidManager.RemovePidFile(name);
     return 0;
 }

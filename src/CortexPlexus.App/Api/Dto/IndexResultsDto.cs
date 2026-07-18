@@ -10,6 +10,23 @@ public sealed record IndexResultsRequest
     public required IReadOnlyList<SymbolDto> Symbols { get; init; }
     public required IReadOnlyList<RelationshipDto> Relationships { get; init; }
     public required Dictionary<string, string> FileHashes { get; init; }
+
+    /// <summary>
+    /// Project-relative paths of files the agent knows are gone (watch delete events,
+    /// server-vs-local hash diff). The server drops their symbols, graph vertices and
+    /// file hashes. NEW in agent v1.2.0 — older agents simply omit it.
+    /// </summary>
+    public IReadOnlyList<string>? DeletedFiles { get; init; }
+
+    /// <summary>
+    /// True when <see cref="FileHashes"/> is the COMPLETE file list of a successful full
+    /// index run (not an incremental watch batch). Arms the server-side stale-symbol
+    /// sweep: every stored symbol whose file is absent from the snapshot is deleted.
+    /// This is what makes force_reindex actually shed symbols of deleted files — the
+    /// hash-diff can't see them once the hash cache is wiped, the snapshot can.
+    /// NEW in agent v1.2.0.
+    /// </summary>
+    public bool FullFileSnapshot { get; init; }
 }
 
 /// <summary>
@@ -91,6 +108,25 @@ public sealed record RelationshipDto
     public Dictionary<string, string>? Metadata { get; init; }
 }
 
+/// <summary>
+/// Liveness report from a `cortexplexus-agent watch` process. Sent on watch start,
+/// after every flush (success or failure) and on a periodic idle timer.
+/// </summary>
+public sealed record AgentHeartbeatRequest
+{
+    public required string ProjectName { get; init; }
+    public string? AgentVersion { get; init; }
+
+    /// <summary>Last confirmed successful sync (upload or verified no-change check). Null when the agent has none to report.</summary>
+    public DateTimeOffset? LastSyncUtc { get; init; }
+
+    /// <summary>Consecutive flush failures at the time of the heartbeat. 0 = healthy.</summary>
+    public int ConsecutiveFailures { get; init; }
+
+    /// <summary>Message of the most recent flush failure, if any.</summary>
+    public string? LastError { get; init; }
+}
+
 public sealed record IndexResultsResponse
 {
     public required string Project { get; init; }
@@ -123,6 +159,12 @@ public sealed record IndexResultsResponse
 
     /// <summary>Human-readable warning messages collected during persist. Empty on success.</summary>
     public IReadOnlyList<string> Warnings { get; init; } = [];
+
+    /// <summary>
+    /// Number of distinct files whose stale symbols/hashes were removed by this request
+    /// (explicit <see cref="IndexResultsRequest.DeletedFiles"/> + snapshot sweep). NEW in v0.9.
+    /// </summary>
+    public int StaleFilesRemoved { get; init; }
 
     /// <summary>
     /// DEPRECATED in v0.7.0, removed in v0.8.0. Computed alias of

@@ -60,6 +60,19 @@ CREATE TABLE IF NOT EXISTS public.file_hashes (
 
 CREATE INDEX IF NOT EXISTS idx_file_hashes_repo ON public.file_hashes (repo_id);
 
+-- Watch-agent liveness (zombie-watch fix): one row per repo fed by `cortexplexus-agent watch`.
+-- last_heartbeat = agent process alive; last_sync = last confirmed successful upload / no-change
+-- check. Fresh heartbeat + old last_sync + consecutive_failures > 0 = watch is running but
+-- failing — list_repositories renders this as Watch: FAILING instead of silently serving stale data.
+CREATE TABLE IF NOT EXISTS public.agent_watch_status (
+    repo_id              UUID PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+    agent_version        TEXT NOT NULL DEFAULT 'unknown',
+    last_heartbeat       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_sync            TIMESTAMPTZ,
+    consecutive_failures INT NOT NULL DEFAULT 0,
+    last_error           TEXT
+);
+
 -- Documentation + Summary columns (P0a/P0b)
 ALTER TABLE public.code_symbols ADD COLUMN IF NOT EXISTS documentation TEXT;
 ALTER TABLE public.code_symbols ADD COLUMN IF NOT EXISTS summary TEXT;

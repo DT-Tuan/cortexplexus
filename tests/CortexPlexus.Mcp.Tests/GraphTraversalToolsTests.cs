@@ -720,4 +720,79 @@ public class GraphTraversalToolsTests
         Assert.Contains("App.Domain.BaseClass", result);
         Assert.DoesNotContain("System.Object", result);
     }
+
+    // === Watch-agent liveness label (zombie-watch fix) ===
+    // A watch that is alive-but-not-uploading used to be invisible: "Health: OK",
+    // fresh-looking scores, index frozen for weeks. FormatWatchLabel renders the
+    // agent's self-reported state so the failure mode shows in list_repositories.
+
+    private static WatchStatusInfo WatchStatus(
+        DateTimeOffset now,
+        TimeSpan heartbeatAge,
+        TimeSpan? syncAge = null,
+        int failures = 0,
+        string? lastError = null) =>
+        new(Guid.NewGuid(), "1.2.0", now - heartbeatAge,
+            syncAge is { } s ? now - s : null, failures, lastError);
+
+    [Fact]
+    public void FormatWatchLabel_NoStatus_ReturnsNull()
+    {
+        // Repo không có watch agent (server-side indexed) → không in dòng Watch.
+        Assert.Null(GraphTraversalTools.FormatWatchLabel(null, DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public void FormatWatchLabel_FreshHeartbeatNoFailures_Active()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var label = GraphTraversalTools.FormatWatchLabel(
+            WatchStatus(now, heartbeatAge: TimeSpan.FromMinutes(2), syncAge: TimeSpan.FromMinutes(10)), now);
+
+        Assert.NotNull(label);
+        Assert.StartsWith("ACTIVE", label);
+        Assert.Contains("10 minutes", label);
+    }
+
+    [Fact]
+    public void FormatWatchLabel_AliveButFailing_ShowsFailingWithError()
+    {
+        // The CortexFlow zombie: systemd says active, MSBuildWorkspace throws on every
+        // flush, index frozen. Heartbeats keep flowing (process alive) but carry a
+        // failure count — the label must scream FAILING, not ACTIVE.
+        var now = DateTimeOffset.UtcNow;
+        var label = GraphTraversalTools.FormatWatchLabel(
+            WatchStatus(now, heartbeatAge: TimeSpan.FromMinutes(1), syncAge: TimeSpan.FromDays(28),
+                failures: 4, lastError: "MSBuildWorkspace.OpenSolutionAsync threw"), now);
+
+        Assert.NotNull(label);
+        Assert.StartsWith("FAILING", label);
+        Assert.Contains("4", label);
+        Assert.Contains("MSBuildWorkspace.OpenSolutionAsync threw", label);
+        Assert.Contains("28 days", label);
+    }
+
+    [Fact]
+    public void FormatWatchLabel_StaleHeartbeat_Disconnected()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var label = GraphTraversalTools.FormatWatchLabel(
+            WatchStatus(now, heartbeatAge: TimeSpan.FromHours(3), syncAge: TimeSpan.FromHours(3)), now);
+
+        Assert.NotNull(label);
+        Assert.StartsWith("DISCONNECTED", label);
+        Assert.Contains("3 hours", label);
+        Assert.Contains("NOT flowing", label);
+    }
+
+    [Fact]
+    public void FormatWatchLabel_NeverSynced_SaysSo()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var label = GraphTraversalTools.FormatWatchLabel(
+            WatchStatus(now, heartbeatAge: TimeSpan.FromMinutes(1)), now);
+
+        Assert.NotNull(label);
+        Assert.Contains("no successful sync recorded", label);
+    }
 }

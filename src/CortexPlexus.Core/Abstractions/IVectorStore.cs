@@ -24,4 +24,22 @@ public interface IVectorStore
     Task<VectorUpsertResult> UpsertAsync(IEnumerable<CodeSymbol> symbols, IReadOnlyDictionary<string, float[]> embeddings, CancellationToken ct = default);
     Task<IReadOnlyList<SearchResult>> SearchAsync(float[] queryEmbedding, int limit = 10, Guid? repoId = null, string? kind = null, CancellationToken ct = default);
     Task DeleteByRepoAsync(Guid repoId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Delete all <c>code_symbols</c> rows (incl. embedding + FTS columns) of a repository
+    /// whose <c>file_path</c> is in <paramref name="filePaths"/>. Returns rows deleted.
+    /// Explicit-deletion half of the stale-symbol fix: the agent reports files it saw
+    /// disappear (watch delete events, server-vs-local hash diff).
+    /// </summary>
+    Task<int> DeleteByFilePathsAsync(Guid repoId, IReadOnlyCollection<string> filePaths, CancellationToken ct = default);
+
+    /// <summary>
+    /// Sweep half of the stale-symbol fix: delete every <c>code_symbols</c> row of the
+    /// repository whose <c>file_path</c> is NOT in <paramref name="presentFilePaths"/>
+    /// (the full file list of a just-completed, successful index run). Returns the
+    /// distinct file paths that were removed so the caller can clean the graph too.
+    /// Rows with NULL file_path are never swept (cannot be attributed to a file).
+    /// An empty snapshot is a no-op — a failed/partial crawl must not wipe the repo.
+    /// </summary>
+    Task<IReadOnlyList<string>> SweepMissingFilesAsync(Guid repoId, IReadOnlyCollection<string> presentFilePaths, CancellationToken ct = default);
 }

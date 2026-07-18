@@ -11,5 +11,8 @@ namespace CortexPlexus.Core;
 /// </summary>
 public static class AgentInfo
 {
-    public const string Version = "1.1.0";
+    // 1.2.0: stale-symbol fix (relative-path hash diff, deletedFiles + fullFileSnapshot
+    // wire fields) + zombie-watch fix (flush re-queue/backoff, fail-fast exit,
+    // /api/agent/heartbeat liveness reporting).
+    public const string Version = "1.2.0";
 }
