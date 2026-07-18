@@ -14,5 +14,8 @@ public static class AgentInfo
     // 1.2.0: stale-symbol fix (relative-path hash diff, deletedFiles + fullFileSnapshot
     // wire fields) + zombie-watch fix (flush re-queue/backoff, fail-fast exit,
     // /api/agent/heartbeat liveness reporting).
-    public const string Version = "1.2.0";
+    // 1.2.1: ADR-018 embedding-space versioning — adds the `fullReindex` wire field
+    // (distinct from fullFileSnapshot) so only a genuine full re-index stamps the space
+    // and bypasses the incremental space-mismatch guard.
+    public const string Version = "1.2.1";
 }

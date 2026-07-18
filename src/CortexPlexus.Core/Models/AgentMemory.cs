@@ -53,8 +53,11 @@ public sealed record AgentMemory(
 
 /// <summary>
 /// A memory row decorated with its current decay-weighted score. Returned by recall queries.
+/// <paramref name="ForeignEmbeddingSpace"/> is true when the row's stamp does not match the
+/// server's current embedding space — ranked with neutral 0.5 (content-only; ADR-018).
 /// </summary>
 public sealed record AgentMemoryResult(
     AgentMemory Memory,
-    double Score
+    double Score,
+    bool ForeignEmbeddingSpace = false
 );

@@ -46,3 +46,10 @@ CREATE INDEX IF NOT EXISTS idx_agent_memories_embedding_hnsw
 -- Index by last_accessed_at for the reaper scan (Wave 2).
 CREATE INDEX IF NOT EXISTS idx_agent_memories_last_accessed
     ON agent_memories (last_accessed_at);
+
+-- Embedding-space stamp (ADR-018): per-row provenance — memories are written one at a time
+-- across provider eras, so only per-row stamps are truthful. NULL = no embedding or legacy.
+ALTER TABLE agent_memories
+    ADD COLUMN IF NOT EXISTS embedding_provider TEXT,
+    ADD COLUMN IF NOT EXISTS embedding_model    TEXT,
+    ADD COLUMN IF NOT EXISTS embedding_dim      INT;

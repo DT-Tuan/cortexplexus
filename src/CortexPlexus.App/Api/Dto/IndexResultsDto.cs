@@ -19,14 +19,27 @@ public sealed record IndexResultsRequest
     public IReadOnlyList<string>? DeletedFiles { get; init; }
 
     /// <summary>
-    /// True when <see cref="FileHashes"/> is the COMPLETE file list of a successful full
-    /// index run (not an incremental watch batch). Arms the server-side stale-symbol
-    /// sweep: every stored symbol whose file is absent from the snapshot is deleted.
-    /// This is what makes force_reindex actually shed symbols of deleted files — the
-    /// hash-diff can't see them once the hash cache is wiped, the snapshot can.
-    /// NEW in agent v1.2.0.
+    /// True when <see cref="FileHashes"/> is the COMPLETE file list of this run (both a
+    /// full index AND an incremental IndexAsync re-hash the whole tree). Arms the
+    /// server-side stale-symbol sweep: every stored symbol whose file is absent from the
+    /// snapshot is deleted. This is what makes force_reindex actually shed symbols of
+    /// deleted files. NEW in agent v1.2.0.
     /// </summary>
     public bool FullFileSnapshot { get; init; }
+
+    /// <summary>
+    /// True ONLY when EVERY symbol in this run was (re-)embedded in the server's current
+    /// space — i.e. a genuine full re-index, not an incremental that touched a subset.
+    /// Distinct from <see cref="FullFileSnapshot"/> (which is about the file-hash list,
+    /// not the embeddings): an incremental IndexAsync sends FullFileSnapshot=true (for the
+    /// sweep) but FullReindex=false. Arms the embedding-space stamp and bypasses the
+    /// incremental space-mismatch 409 guard — reusing FullFileSnapshot for that would let
+    /// a subset-embed incremental falsely stamp a mixed-space repo as pure. NEW in v0.9 /
+    /// agent 1.2.1. Absent on older agents ⇒ false ⇒ they can only stamp via the server
+    /// pipeline (index_from_local), and a mismatched incremental from them is correctly
+    /// blocked until they upgrade.
+    /// </summary>
+    public bool FullReindex { get; init; }
 }
 
 /// <summary>

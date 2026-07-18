@@ -795,4 +795,45 @@ public class GraphTraversalToolsTests
         Assert.NotNull(label);
         Assert.Contains("no successful sync recorded", label);
     }
+
+    // === ADR-018: Embedding-space label in list_repositories ===
+    // Makes fleet migration progress self-documenting: which repos still carry
+    // old-space vectors (⚠️ mismatch), which are unstamped legacy (unknown).
+
+    private static readonly EmbeddingSpace CurrentSpace = new("vertex", "text-embedding-005", 768);
+
+    [Fact]
+    public void FormatEmbeddingSpaceLabel_Unstamped_SaysUnknown()
+    {
+        var label = GraphTraversalTools.FormatEmbeddingSpaceLabel(null, null, null, CurrentSpace);
+        Assert.Equal("space unknown — stamp by re-indexing", label);
+    }
+
+    [Fact]
+    public void FormatEmbeddingSpaceLabel_Matched_PlainSpace()
+    {
+        var label = GraphTraversalTools.FormatEmbeddingSpaceLabel(
+            "vertex", "text-embedding-005", 768, CurrentSpace);
+        Assert.Equal("vertex/text-embedding-005 (768d)", label);
+    }
+
+    [Fact]
+    public void FormatEmbeddingSpaceLabel_Mismatch_Warns()
+    {
+        var label = GraphTraversalTools.FormatEmbeddingSpaceLabel(
+            "ollama", "nomic-embed-text", 768, CurrentSpace);
+        Assert.Equal(
+            "ollama/nomic-embed-text (768d) ⚠️ mismatch — semantic_search degraded until re-index",
+            label);
+    }
+
+    [Fact]
+    public void FormatEmbeddingSpaceLabel_NoCurrentSpace_NoMismatchCheck()
+    {
+        // Bare harness without a registered current space: show the stamp, never warn
+        // (a mismatch claim needs both sides).
+        var label = GraphTraversalTools.FormatEmbeddingSpaceLabel(
+            "ollama", "nomic-embed-text", 768, current: null);
+        Assert.Equal("ollama/nomic-embed-text (768d)", label);
+    }
 }

@@ -83,6 +83,15 @@ public sealed class LocalIndexer
         var localHashes = ComputeLocalHashes(path);
         var (changedFiles, deletedFiles) = DiffAgainstServer(localHashes, _serverHashes, _rootPath);
 
+        // A genuine full re-index = the server had no prior hashes (first index, or right
+        // after force_reindex wiped them). Only then is EVERY symbol re-parsed and
+        // re-embedded, which is the precondition for stamping the embedding space and for
+        // bypassing the incremental space-mismatch guard. An incremental IndexAsync
+        // (server has hashes) re-embeds only changed files, so it must NOT claim a full
+        // re-index — even though it still sends the complete file-hash snapshot for the
+        // deletion sweep.
+        var isFullIndex = _serverHashes.Count == 0;
+
         if (changedFiles.Count == 0 && deletedFiles.Count == 0 && _serverHashes.Count > 0)
         {
             _logger.LogInformation("No files changed since last index. Skipping.");
@@ -96,14 +105,12 @@ public sealed class LocalIndexer
             // removed files. Previously this case silently skipped, which is exactly
             // how deleted symbols survived in the graph forever.
             _logger.LogInformation("No content changes, but {Count} file(s) were deleted — syncing deletions...", deletedFiles.Count);
-            await PostResultsAsync([], [], localHashes, deletedFiles, fullFileSnapshot: true);
+            await PostResultsAsync([], [], localHashes, deletedFiles, fullFileSnapshot: true, fullReindex: isFullIndex);
             LastSyncUtc = DateTimeOffset.UtcNow;
             sw.Stop();
             _logger.LogInformation("Deletion sync complete in {Duration:F1}s", sw.Elapsed.TotalSeconds);
             return;
         }
-
-        var isFullIndex = _serverHashes.Count == 0;
 
         // Parse all languages
         var allSymbols = new List<CodeSymbol>();
@@ -164,8 +171,11 @@ public sealed class LocalIndexer
         }
 
         // Send results to server. IndexAsync always hashes the FULL local tree, so this
-        // is a complete snapshot — arm the server-side stale-symbol sweep with it.
-        await PostResultsAsync(allSymbols, allRelationships, localHashes, deletedFiles, fullFileSnapshot: true);
+        // is a complete snapshot — arm the stale-symbol sweep with it. fullReindex is
+        // true ONLY on a genuine full re-index (isFullIndex), which is what gates the
+        // embedding-space stamp; an incremental IndexAsync sweeps but does not stamp.
+        await PostResultsAsync(allSymbols, allRelationships, localHashes, deletedFiles,
+            fullFileSnapshot: true, fullReindex: isFullIndex);
         LastSyncUtc = DateTimeOffset.UtcNow;
 
         sw.Stop();
@@ -293,7 +303,8 @@ public sealed class LocalIndexer
         IReadOnlyList<Relationship> relationships,
         Dictionary<string, string> fileHashes,
         IReadOnlyList<string>? deletedFiles = null,
-        bool fullFileSnapshot = false)
+        bool fullFileSnapshot = false,
+        bool fullReindex = false)
     {
         // Convert to DTOs — use project-relative paths to avoid leaking dev machine paths
         var symbolDtos = symbols
@@ -324,7 +335,7 @@ public sealed class LocalIndexer
         if (symbolDtos.Count + relationshipDtos.Count <= ChunkThreshold)
         {
             await PostChunkAsync(symbolDtos, relationshipDtos, relativeHashes, chunkLabel: "single",
-                deletedFiles, fullFileSnapshot);
+                deletedFiles, fullFileSnapshot, fullReindex);
             return;
         }
 
@@ -333,7 +344,10 @@ public sealed class LocalIndexer
             "Large payload detected ({Symbols} symbols + {Rels} relationships) — chunking...",
             symbolDtos.Count, relationshipDtos.Count);
 
-        // Phase 1: Symbols in batches of SymbolChunkSize
+        // Phase 1: Symbols in batches of SymbolChunkSize.
+        // ADR-018: pass fullReindex on EVERY chunk of a genuine full re-index so the
+        // server's incremental space-mismatch guard does not 409 intermediate chunks
+        // (the stamp still waits for the FileHashes-bearing final commit).
         var symbolBatches = symbolDtos.Chunk(SymbolChunkSize).ToList();
         for (var i = 0; i < symbolBatches.Count; i++)
         {
@@ -343,7 +357,9 @@ public sealed class LocalIndexer
                 batch.ToList(),
                 new List<RelationshipDto>(),
                 new Dictionary<string, string>(),
-                chunkLabel: label);
+                chunkLabel: label,
+                fullFileSnapshot: fullFileSnapshot,
+                fullReindex: fullReindex);
         }
 
         // Phase 2: Relationships in batches of RelationshipChunkSize
@@ -356,17 +372,20 @@ public sealed class LocalIndexer
                 new List<object>(),
                 batch.ToList(),
                 new Dictionary<string, string>(),
-                chunkLabel: label);
+                chunkLabel: label,
+                fullFileSnapshot: fullFileSnapshot,
+                fullReindex: fullReindex);
         }
 
         // Phase 3: Final commit chunk — empty content, only file hashes + deletions
-        // (server marks lastIndexed and, on a full snapshot, sweeps stale symbols)
+        // (server marks lastIndexed, sweeps stale symbols on a full snapshot, and stamps
+        // the embedding space when this is a full re-index).
         await PostChunkAsync(
             new List<object>(),
             new List<RelationshipDto>(),
             relativeHashes,
             chunkLabel: $"final commit ({relativeHashes.Count} file hashes)",
-            deletedFiles, fullFileSnapshot);
+            deletedFiles, fullFileSnapshot, fullReindex);
 
         _logger.LogInformation(
             "Chunked upload complete: {SymbolChunks} symbol chunks + {RelChunks} relationship chunks + 1 commit chunk",
@@ -379,7 +398,8 @@ public sealed class LocalIndexer
         IReadOnlyDictionary<string, string> fileHashes,
         string chunkLabel,
         IReadOnlyList<string>? deletedFiles = null,
-        bool fullFileSnapshot = false)
+        bool fullFileSnapshot = false,
+        bool fullReindex = false)
     {
         var payload = new
         {
@@ -387,9 +407,10 @@ public sealed class LocalIndexer
             symbols,
             relationships,
             fileHashes,
-            // Pre-v0.9 servers ignore the two fields below (unknown JSON members).
+            // Pre-v0.9 servers ignore the extra fields below (unknown JSON members).
             deletedFiles = deletedFiles is { Count: > 0 } ? deletedFiles : null,
-            fullFileSnapshot
+            fullFileSnapshot,
+            fullReindex
         };
 
         _logger.LogInformation("POST chunk [{Label}]...", chunkLabel);

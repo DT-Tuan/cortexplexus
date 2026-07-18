@@ -44,7 +44,11 @@ public sealed class AgeFixture : IAsyncLifetime
                 name        TEXT NOT NULL,
                 path        TEXT NOT NULL UNIQUE,
                 created_at  TIMESTAMPTZ DEFAULT NOW(),
-                last_indexed TIMESTAMPTZ
+                last_indexed TIMESTAMPTZ,
+                -- ADR-018 embedding-space stamp (mirrors Graph/Schema/Migrations.sql)
+                embedding_provider TEXT,
+                embedding_model    TEXT,
+                embedding_dim      INT
             );
 
             -- Code symbols (relational, không có vector column để tương thích apache/age)

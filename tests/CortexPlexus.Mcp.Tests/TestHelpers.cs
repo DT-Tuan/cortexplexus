@@ -13,15 +13,21 @@ namespace CortexPlexus.Mcp.Tests;
 /// </summary>
 internal static class TestHelpers
 {
+    /// <summary>Default "current server space" for router tests (ADR-018).</summary>
+    public static readonly EmbeddingSpace TestSpace = new("vertex", "text-embedding-005", 768);
+
     public static HybridQueryRouter BuildRouter(
         IVectorStore? vectorStore = null,
         IFullTextStore? fullTextStore = null,
         IEmbeddingService? embeddingService = null,
-        IQueryExpander? queryExpander = null)
+        IQueryExpander? queryExpander = null,
+        IRepositoryStore? repositoryStore = null,
+        EmbeddingSpace? currentSpace = null)
     {
         vectorStore ??= Substitute.For<IVectorStore>();
         fullTextStore ??= Substitute.For<IFullTextStore>();
         embeddingService ??= Substitute.For<IEmbeddingService>();
+        repositoryStore ??= BuildRepoStore();
 
         // QUAN TRỌNG: chỉ set IsEnabled=false khi tạo mock mới.
         // Nếu test đã truyền queryExpander custom → tôn trọng config của test đó.
@@ -36,6 +42,8 @@ internal static class TestHelpers
             fullTextStore,
             embeddingService,
             queryExpander,
+            repositoryStore,
+            currentSpace ?? TestSpace,
             NullLogger<HybridQueryRouter>.Instance);
     }
 
@@ -50,13 +58,22 @@ internal static class TestHelpers
         return store;
     }
 
-    public static RepositoryInfo MakeRepo(string name, Guid? id = null, string? path = null)
+    public static RepositoryInfo MakeRepo(
+        string name,
+        Guid? id = null,
+        string? path = null,
+        string? embeddingProvider = null,
+        string? embeddingModel = null,
+        int? embeddingDim = null)
         => new(
             Id: id ?? Guid.NewGuid(),
             Name: name,
             Path: path ?? $"/test/{name}",
             CreatedAt: DateTimeOffset.UtcNow,
-            LastIndexed: DateTimeOffset.UtcNow);
+            LastIndexed: DateTimeOffset.UtcNow,
+            EmbeddingProvider: embeddingProvider,
+            EmbeddingModel: embeddingModel,
+            EmbeddingDim: embeddingDim);
 
     public static SearchResult MakeResult(
         string fqn,

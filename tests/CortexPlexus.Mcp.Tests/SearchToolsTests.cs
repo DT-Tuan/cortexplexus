@@ -80,7 +80,7 @@ public class SearchToolsTests
     {
         // Mục đích: expand=true kích hoạt HyDE (nếu IsEnabled=true).
         var vectorStore = Substitute.For<IVectorStore>();
-        vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([]));
 
         var fullTextStore = Substitute.For<IFullTextStore>();
@@ -126,7 +126,7 @@ public class SearchToolsTests
     {
         // Mục đích: expand=true nhưng IsEnabled=false → graceful fallback, không crash.
         var vectorStore = Substitute.For<IVectorStore>();
-        vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([]));
 
         var fullTextStore = Substitute.For<IFullTextStore>();

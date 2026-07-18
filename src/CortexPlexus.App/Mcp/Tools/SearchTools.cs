@@ -22,6 +22,7 @@ public sealed class SearchTools
         var repoId = await RepoResolver.ResolveAsync(repository, repoStore);
         var results = await router.SearchAsync(new SearchRequest(query, SearchType.Bm25, limit, RepoId: repoId, Expand: expand));
         var body = results.Count == 0 ? "No results found." : compressor.Compress(results);
+        // BM25 does not use the vector leg; space footer is N/A here.
         return await AppendStalenessFooter(body, repoId, repoStore);
     }
 
@@ -36,8 +37,10 @@ public sealed class SearchTools
         IRepositoryStore repoStore = default!)
     {
         var repoId = await RepoResolver.ResolveAsync(repository, repoStore);
-        var results = await router.SearchAsync(new SearchRequest(query, SearchType.Hybrid, limit, RepoId: repoId, Expand: expand));
-        var body = results.Count == 0 ? "No results found." : compressor.Compress(results);
+        var outcome = await router.SearchWithFooterAsync(new SearchRequest(query, SearchType.Hybrid, limit, RepoId: repoId, Expand: expand));
+        var body = outcome.Results.Count == 0 ? "No results found." : compressor.Compress(outcome.Results);
+        // ADR-018: append embedding-space footer (skip / excluded / unknown) when present.
+        body = AppendIfPresent(body, outcome.SpaceFooter);
         return await AppendStalenessFooter(body, repoId, repoStore);
     }
 
@@ -59,6 +62,10 @@ public sealed class SearchTools
             .OrderBy(r => r.LastIndexed ?? DateTimeOffset.MaxValue)
             .First();
         var footer = StalenessLabel.SearchFooter(stalest.LastIndexed, DateTimeOffset.UtcNow);
-        return footer is null ? body : $"{body}\n\n{footer}";
+        return AppendIfPresent(body, footer);
     }
+
+    /// <summary>Shared "append footer if non-null" seam (ADR-015 + ADR-018).</summary>
+    private static string AppendIfPresent(string body, string? footer)
+        => footer is null ? body : $"{body}\n\n{footer}";
 }

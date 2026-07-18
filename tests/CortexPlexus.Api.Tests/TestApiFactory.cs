@@ -65,6 +65,8 @@ public sealed class TestApiFactory : IDisposable
                         e.IsEnabled.Returns(false);
                         return e;
                     });
+                    // ADR-018: router + endpoints need the server's current embedding space.
+                    services.AddSingleton(new CortexPlexus.Core.Models.EmbeddingSpace("vertex", "text-embedding-005", 768));
                     services.AddSingleton<HybridQueryRouter>();
                     services.AddSingleton<ContextCompressor>();
 
