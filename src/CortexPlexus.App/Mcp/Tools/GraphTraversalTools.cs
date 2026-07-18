@@ -449,6 +449,15 @@ public sealed class GraphTraversalTools
                 sb.AppendLine("  Health: UNKNOWN — no rows in code_symbols for this repo.");
             }
 
+            // Watch-agent liveness (zombie-watch fix): a watch process that is alive but
+            // failing to upload used to be invisible — "Health: OK" + fresh-looking
+            // results while the index silently froze for weeks. Render its last
+            // self-reported state so the failure mode shows up in this one call.
+            var watchStatus = await repoStore.GetWatchStatusAsync(r.Id);
+            var watchLabel = FormatWatchLabel(watchStatus, DateTimeOffset.UtcNow);
+            if (watchLabel is not null)
+                sb.AppendLine($"  Watch: {watchLabel}");
+
             if (g.Stale.Count > 0)
             {
                 var stalePaths = string.Join(", ", g.Stale.Select(s => s.Path));
@@ -518,10 +527,62 @@ public sealed class GraphTraversalTools
         };
     }
 
+    /// <summary>
+    /// Render the Watch line for a repository from its agent-reported status. Pure logic
+    /// (no DB / no clock access) so unit tests can exercise every branch. Null when no
+    /// watch agent has ever reported for the repo — the line is omitted entirely.
+    /// </summary>
+    internal static string? FormatWatchLabel(WatchStatusInfo? status, DateTimeOffset now)
+    {
+        if (status is null) return null;
+
+        var heartbeatAge = now - status.LastHeartbeat;
+        var syncNote = status.LastSync is { } sync
+            ? $"last successful sync {FormatAge(now - sync)} ago"
+            : "no successful sync recorded";
+
+        // Heartbeats flow every ~5 min while the agent runs; 15 min of silence means
+        // the process is gone (crashed, host down, network partition).
+        if (heartbeatAge > TimeSpan.FromMinutes(15))
+        {
+            return $"DISCONNECTED — no heartbeat for {FormatAge(heartbeatAge)} ({syncNote}). " +
+                   "The watch agent is down or unreachable; index updates are NOT flowing. " +
+                   "Restart it (e.g. systemctl --user restart cortexplexus-watch@<name>).";
+        }
+
+        if (status.ConsecutiveFailures > 0)
+        {
+            return $"FAILING — agent v{status.AgentVersion} is alive but its last " +
+                   $"{status.ConsecutiveFailures} upload attempt(s) failed; {syncNote}. " +
+                   $"Last error: {status.LastError ?? "unknown"}. Query results may be stale.";
+        }
+
+        return $"ACTIVE — agent v{status.AgentVersion}, {syncNote}.";
+    }
+
+    /// <summary>Compact age rendering for watch labels: minutes under an hour, then hours/days.</summary>
+    private static string FormatAge(TimeSpan age)
+    {
+        if (age < TimeSpan.Zero) age = TimeSpan.Zero;
+        if (age.TotalDays >= 1.0)
+        {
+            var days = (int)age.TotalDays;
+            return days == 1 ? "1 day" : $"{days} days";
+        }
+        if (age.TotalHours >= 1.0)
+        {
+            var hours = (int)age.TotalHours;
+            return hours == 1 ? "1 hour" : $"{hours} hours";
+        }
+        var minutes = Math.Max(1, (int)age.TotalMinutes);
+        return minutes == 1 ? "1 minute" : $"{minutes} minutes";
+    }
+
     [McpServerTool, Description(
         "Force a full re-index of a previously indexed repository on the next indexing run. " +
         "Wipes the server-side file-hash cache for that repo so every file is treated as changed. " +
-        "Does NOT delete symbols in place — fresh upserts overwrite by FQN. " +
+        "Symbols are refreshed by upsert on matching FQN, and the full run's file snapshot sweeps " +
+        "out entries whose source files no longer exist (requires agent v1.2.0+ for agent-fed repos). " +
         "Use when: the repo is stuck in PARTIAL / DEGRADED health, incremental indexing missed changes, " +
         "or you want a clean rebuild after a server-side fix. Run ActivateAgent or index_from_local afterwards.")]
     public static async Task<string> ForceReindex(
@@ -553,9 +614,10 @@ public sealed class GraphTraversalTools
               Hashes cleared: {deletedHashes}
               Path:           {match.Path}
               Next step:      call ActivateAgent (for .NET projects) or index_from_local (for server-side
-                              TS/JS/Py/Md) to run the full re-index. Existing symbols are NOT deleted —
-                              they will be overwritten by upsert on matching FQN, and stale entries
-                              whose files no longer exist will remain until a maintenance sweep.
+                              TS/JS/Py/Md) to run the full re-index. Existing symbols are refreshed by
+                              upsert on matching FQN, and the run's full file snapshot sweeps out stale
+                              entries whose source files no longer exist (agent v1.2.0+ or server-side
+                              indexing; older agents leave stale entries behind).
             """;
     }
 }

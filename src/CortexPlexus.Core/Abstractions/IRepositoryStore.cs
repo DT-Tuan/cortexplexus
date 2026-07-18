@@ -19,4 +19,28 @@ public interface IRepositoryStore
     Task<bool> IsFileChangedAsync(string filePath, Guid repoId, string contentHash, CancellationToken ct = default);
     Task UpdateFileHashAsync(string filePath, Guid repoId, string contentHash, CancellationToken ct = default);
     Task<Dictionary<string, string>> GetFileHashesAsync(Guid repoId, CancellationToken ct = default);
+
+    /// <summary>Delete the <c>file_hashes</c> rows of the given files. Returns rows deleted.</summary>
+    Task<int> DeleteFileHashesAsync(Guid repoId, IReadOnlyCollection<string> filePaths, CancellationToken ct = default);
+
+    /// <summary>
+    /// Delete every <c>file_hashes</c> row of the repository whose path is NOT in
+    /// <paramref name="presentFilePaths"/> (full file list of a successful index run).
+    /// Returns the paths removed. Empty snapshot is a no-op (see
+    /// <see cref="IVectorStore.SweepMissingFilesAsync"/> for rationale).
+    /// </summary>
+    Task<IReadOnlyList<string>> SweepFileHashesAsync(Guid repoId, IReadOnlyCollection<string> presentFilePaths, CancellationToken ct = default);
+
+    /// <summary>
+    /// Record a watch-agent heartbeat for a repository (upsert). <paramref name="lastSyncUtc"/>
+    /// only moves the stored value forward when non-null — a heartbeat that carries no sync
+    /// info must not erase the last known good sync. Lets list_repositories expose a
+    /// watch that is alive-but-not-uploading (the zombie-agent failure mode).
+    /// </summary>
+    Task UpsertWatchHeartbeatAsync(
+        Guid repoId, string agentVersion, DateTimeOffset? lastSyncUtc,
+        int consecutiveFailures, string? lastError, CancellationToken ct = default);
+
+    /// <summary>Latest watch-agent status for a repository, or null if no agent ever reported.</summary>
+    Task<WatchStatusInfo?> GetWatchStatusAsync(Guid repoId, CancellationToken ct = default);
 }

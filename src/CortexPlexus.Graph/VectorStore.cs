@@ -269,6 +269,58 @@ public sealed class VectorStore(NpgsqlDataSource dataSource, ILogger<VectorStore
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    public async Task<int> DeleteByFilePathsAsync(
+        Guid repoId, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
+    {
+        if (filePaths.Count == 0) return 0;
+
+        const string sql = "DELETE FROM code_symbols WHERE repo_id = @repoId AND file_path = ANY(@paths)";
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("@repoId", repoId);
+        cmd.Parameters.AddWithValue("@paths", filePaths.ToArray());
+        var rows = await cmd.ExecuteNonQueryAsync(ct);
+        if (rows > 0)
+            logger.LogInformation("Deleted {Rows} code_symbols rows for {Files} removed file(s)", rows, filePaths.Count);
+        return rows;
+    }
+
+    public async Task<IReadOnlyList<string>> SweepMissingFilesAsync(
+        Guid repoId, IReadOnlyCollection<string> presentFilePaths, CancellationToken ct = default)
+    {
+        // Empty snapshot = no-op: sweeping against nothing would delete the whole repo.
+        // A legitimate "repo is now empty" wipe must go through DeleteRepository.
+        if (presentFilePaths.Count == 0) return [];
+
+        const string sql = """
+            DELETE FROM code_symbols
+            WHERE repo_id = @repoId
+              AND file_path IS NOT NULL
+              AND NOT (file_path = ANY(@paths))
+            RETURNING file_path
+            """;
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("@repoId", repoId);
+        cmd.Parameters.AddWithValue("@paths", presentFilePaths.ToArray());
+
+        var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            removed.Add(reader.GetString(0));
+
+        if (removed.Count > 0)
+            logger.LogInformation(
+                "Stale-symbol sweep: removed symbols from {Files} file(s) no longer present in the index snapshot",
+                removed.Count);
+
+        return removed.ToList();
+    }
+
     // --- Private helpers ---
 
     private static async Task UpsertBatch(

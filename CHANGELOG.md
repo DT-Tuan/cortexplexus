@@ -37,11 +37,54 @@ Versioning notes:
     Development, env vars in the container) in addition to env-var reads, so the
     Vertex API key stays runtime-only and is never committed.
 
+### Fixed
+
+- **Stale-symbol sweep — the graph now forgets deleted files** (PR #28; bug
+  filed from CortexFlow 2026-07-10). Symbols of deleted source files were
+  served forever at score 1.0 — upsert-by-FQN never revisits a file that no
+  longer exists — and `force_reindex` could not repair it (it only wipes the
+  hash cache). Fixed in three layers:
+  - Agent hash diff (`DiffAgainstServer`) now normalizes project-relative vs
+    absolute path forms. The old compare matched absolute local keys against
+    relative server keys — they never matched, so every watch start re-parsed
+    the entire repo and deletions were structurally undetectable. The diff also
+    yields `deletedFiles` (server keys with no local file), reported to the
+    server, and watch delete/rename events flow through incremental batches.
+  - Full-index commits set `fullFileSnapshot`: the server deletes every
+    `code_symbols` row, AGE graph vertex (`DETACH DELETE`, so dead methods
+    vanish from `get_callers`/`get_callees` too) and `file_hashes` row whose
+    file is absent from the snapshot. An empty snapshot is a hard no-op, so a
+    failed or partial crawl can never wipe a repo; the sweep runs only after
+    every upsert of the request succeeded. This is what makes `force_reindex`
+    actually shed stale entries.
+  - Server-side `IndexingPipeline` (`index_from_local` / workspace watch) runs
+    the same sweep, including on the "no content changes" early exit — a
+    pure-deletion change previously skipped before telling the server anything.
+- **Zombie-watch fail-fast + liveness reporting** (PR #28; bug filed from
+  CortexFlow 2026-07-17). A watch agent could stay "active (running)" for weeks
+  while every flush died on the same exception — batches were dropped, the
+  index silently froze, and nothing signalled an error.
+  - Failed flush batches are **re-queued** and retried with backoff
+    (30 s → 240 s); **5 consecutive failures exit the process non-zero**
+    (code 2) so `systemd Restart=` recycles it within minutes instead of
+    zombie-ing for weeks.
+  - New `POST /api/agent/heartbeat` + `agent_watch_status` table (idempotent
+    migration). `list_repositories` now renders a `Watch:` line —
+    `ACTIVE` (with last-successful-sync age), `FAILING` (alive but N
+    consecutive upload failures, with the last error), or `DISCONNECTED`
+    (no heartbeat >15 min) — so an alive-but-not-uploading watch is visible
+    in one call.
+
 ### Notes
 
 - Switching a repo to Vertex requires a **full re-embed** (different vector
   space than Ollama `nomic-embed-text`, even though both are 768-dim). The OSS
   all-local default (`Provider=ollama`) and the Gemini branch are unchanged.
+- **Local Agent 1.1.0 → 1.2.0** (new wire fields `deletedFiles` /
+  `fullFileSnapshot`, heartbeat endpoint — backward compatible in both
+  directions). After deploying the server, run `cortexplexus-agent update` and
+  restart watch units: the first full index per repo **auto-repairs existing
+  stale graphs** via the snapshot sweep — no `DeleteRepository` needed.
 
 ## [0.8.4] — 2026-04-19
 

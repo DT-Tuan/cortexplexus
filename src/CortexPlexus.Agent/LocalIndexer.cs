@@ -59,6 +59,13 @@ public sealed class LocalIndexer
     }
 
     /// <summary>
+    /// Last confirmed successful sync with the server: an index upload that was fully
+    /// acknowledged, or a verified "nothing changed" check. Reported in heartbeats so
+    /// the server can tell a healthy-idle watch from a zombie one.
+    /// </summary>
+    public DateTimeOffset? LastSyncUtc { get; private set; }
+
+    /// <summary>
     /// Full index of a project directory. Fetches server hashes first for incremental detection.
     /// </summary>
     public async Task IndexAsync(string path)
@@ -70,13 +77,29 @@ public sealed class LocalIndexer
         // Fetch existing hashes from server
         await FetchServerHashesAsync();
 
-        // Compute local hashes and find changed files
+        // Compute local hashes and diff against the server: changed files to re-parse,
+        // plus files the server still has hashes for that no longer exist locally —
+        // those must be reported so the server can drop their stale symbols.
         var localHashes = ComputeLocalHashes(path);
-        var changedFiles = FindChangedFiles(localHashes);
+        var (changedFiles, deletedFiles) = DiffAgainstServer(localHashes, _serverHashes, _rootPath);
 
-        if (changedFiles.Count == 0 && _serverHashes.Count > 0)
+        if (changedFiles.Count == 0 && deletedFiles.Count == 0 && _serverHashes.Count > 0)
         {
             _logger.LogInformation("No files changed since last index. Skipping.");
+            LastSyncUtc = DateTimeOffset.UtcNow;
+            return;
+        }
+
+        if (changedFiles.Count == 0 && deletedFiles.Count > 0)
+        {
+            // Deletion-only sync: nothing to parse, but the server must forget the
+            // removed files. Previously this case silently skipped, which is exactly
+            // how deleted symbols survived in the graph forever.
+            _logger.LogInformation("No content changes, but {Count} file(s) were deleted — syncing deletions...", deletedFiles.Count);
+            await PostResultsAsync([], [], localHashes, deletedFiles, fullFileSnapshot: true);
+            LastSyncUtc = DateTimeOffset.UtcNow;
+            sw.Stop();
+            _logger.LogInformation("Deletion sync complete in {Duration:F1}s", sw.Elapsed.TotalSeconds);
             return;
         }
 
@@ -134,14 +157,16 @@ public sealed class LocalIndexer
 
         _logger.LogInformation("Parsed: {Symbols} symbols, {Rels} relationships", allSymbols.Count, allRelationships.Count);
 
-        if (allSymbols.Count == 0)
+        if (allSymbols.Count == 0 && deletedFiles.Count == 0)
         {
             _logger.LogWarning("No symbols extracted.");
             return;
         }
 
-        // Send results to server
-        await PostResultsAsync(allSymbols, allRelationships, localHashes);
+        // Send results to server. IndexAsync always hashes the FULL local tree, so this
+        // is a complete snapshot — arm the server-side stale-symbol sweep with it.
+        await PostResultsAsync(allSymbols, allRelationships, localHashes, deletedFiles, fullFileSnapshot: true);
+        LastSyncUtc = DateTimeOffset.UtcNow;
 
         sw.Stop();
         _logger.LogInformation("Index complete in {Duration:F1}s", sw.Elapsed.TotalSeconds);
@@ -153,14 +178,25 @@ public sealed class LocalIndexer
     public async Task IndexFilesAsync(string rootPath, IReadOnlyList<string> changedFiles)
     {
         var sw = Stopwatch.StartNew();
+        if (string.IsNullOrEmpty(_rootPath))
+            _rootPath = Path.GetFullPath(rootPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        // Split the batch: files that still exist get re-parsed; files that are gone
+        // (delete events, rename sources) are reported to the server so their symbols
+        // are dropped instead of lingering in the graph forever.
+        var existingFiles = changedFiles.Where(File.Exists).ToList();
+        var deletedFiles = changedFiles
+            .Where(f => !File.Exists(f))
+            .Select(ToRelativePath)
+            .ToList();
 
         var allSymbols = new List<CodeSymbol>();
         var allRelationships = new List<Relationship>();
 
         // Group by language
-        var csFiles = changedFiles.Where(f => f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)).ToList();
-        var tsFiles = changedFiles.Where(f => IsTreeSitterFile(f)).ToList();
-        var mdFiles = changedFiles.Where(f => f.EndsWith(".md", StringComparison.OrdinalIgnoreCase)).ToList();
+        var csFiles = existingFiles.Where(f => f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)).ToList();
+        var tsFiles = existingFiles.Where(f => IsTreeSitterFile(f)).ToList();
+        var mdFiles = existingFiles.Where(f => f.EndsWith(".md", StringComparison.OrdinalIgnoreCase)).ToList();
 
         // C# incremental
         if (csFiles.Count > 0)
@@ -190,7 +226,7 @@ public sealed class LocalIndexer
             allRelationships.AddRange(result.Relationships);
         }
 
-        if (allSymbols.Count == 0)
+        if (allSymbols.Count == 0 && deletedFiles.Count == 0)
         {
             _logger.LogInformation("No symbols extracted from changed files.");
             return;
@@ -198,16 +234,19 @@ public sealed class LocalIndexer
 
         // Compute hashes for changed files only
         var hashes = new Dictionary<string, string>();
-        foreach (var file in changedFiles)
+        foreach (var file in existingFiles)
         {
-            if (File.Exists(file))
-                hashes[file] = ComputeFileHash(file);
+            hashes[file] = ComputeFileHash(file);
         }
 
-        await PostResultsAsync(allSymbols, allRelationships, hashes);
+        // Incremental batch → NOT a full snapshot; only the explicit deletions apply.
+        await PostResultsAsync(allSymbols, allRelationships, hashes, deletedFiles, fullFileSnapshot: false);
+        LastSyncUtc = DateTimeOffset.UtcNow;
 
         sw.Stop();
-        _logger.LogInformation("Incremental index: {Symbols} symbols in {Duration:F1}s", allSymbols.Count, sw.Elapsed.TotalSeconds);
+        _logger.LogInformation(
+            "Incremental index: {Symbols} symbols, {Deleted} deletion(s) in {Duration:F1}s",
+            allSymbols.Count, deletedFiles.Count, sw.Elapsed.TotalSeconds);
     }
 
     private async Task FetchServerHashesAsync()
@@ -252,7 +291,9 @@ public sealed class LocalIndexer
     private async Task PostResultsAsync(
         IReadOnlyList<CodeSymbol> symbols,
         IReadOnlyList<Relationship> relationships,
-        Dictionary<string, string> fileHashes)
+        Dictionary<string, string> fileHashes,
+        IReadOnlyList<string>? deletedFiles = null,
+        bool fullFileSnapshot = false)
     {
         // Convert to DTOs — use project-relative paths to avoid leaking dev machine paths
         var symbolDtos = symbols
@@ -276,10 +317,14 @@ public sealed class LocalIndexer
             kv => ToRelativePath(kv.Key),
             kv => kv.Value);
 
+        // Deleted files travel with whichever request also carries the file hashes:
+        // the single POST, or the final commit chunk. That keeps the server-side
+        // deletion + snapshot sweep on the same request that proves the run finished.
         // Small payload → single POST như cũ (avoid chunking overhead)
         if (symbolDtos.Count + relationshipDtos.Count <= ChunkThreshold)
         {
-            await PostChunkAsync(symbolDtos, relationshipDtos, relativeHashes, chunkLabel: "single");
+            await PostChunkAsync(symbolDtos, relationshipDtos, relativeHashes, chunkLabel: "single",
+                deletedFiles, fullFileSnapshot);
             return;
         }
 
@@ -314,12 +359,14 @@ public sealed class LocalIndexer
                 chunkLabel: label);
         }
 
-        // Phase 3: Final commit chunk — empty content, only file hashes (server marks lastIndexed)
+        // Phase 3: Final commit chunk — empty content, only file hashes + deletions
+        // (server marks lastIndexed and, on a full snapshot, sweeps stale symbols)
         await PostChunkAsync(
             new List<object>(),
             new List<RelationshipDto>(),
             relativeHashes,
-            chunkLabel: $"final commit ({relativeHashes.Count} file hashes)");
+            chunkLabel: $"final commit ({relativeHashes.Count} file hashes)",
+            deletedFiles, fullFileSnapshot);
 
         _logger.LogInformation(
             "Chunked upload complete: {SymbolChunks} symbol chunks + {RelChunks} relationship chunks + 1 commit chunk",
@@ -330,14 +377,19 @@ public sealed class LocalIndexer
         IReadOnlyList<object> symbols,
         IReadOnlyList<RelationshipDto> relationships,
         IReadOnlyDictionary<string, string> fileHashes,
-        string chunkLabel)
+        string chunkLabel,
+        IReadOnlyList<string>? deletedFiles = null,
+        bool fullFileSnapshot = false)
     {
         var payload = new
         {
             projectName = _projectName,
             symbols,
             relationships,
-            fileHashes
+            fileHashes,
+            // Pre-v0.9 servers ignore the two fields below (unknown JSON members).
+            deletedFiles = deletedFiles is { Count: > 0 } ? deletedFiles : null,
+            fullFileSnapshot
         };
 
         _logger.LogInformation("POST chunk [{Label}]...", chunkLabel);
@@ -481,27 +533,53 @@ public sealed class LocalIndexer
     }
 
     /// <summary>
-    /// Test-friendly overload of FindChangedFiles cho phép inject server hashes mock.
+    /// Diff local files against the server's stored hashes.
+    /// Local keys are absolute paths; server keys are project-relative (v0.7+ servers)
+    /// or absolute (legacy rows) — comparison happens on both forms so either
+    /// generation matches. Returns:
+    /// <list type="bullet">
+    /// <item><b>Changed</b> — absolute paths of local files that are new or whose hash differs.</item>
+    /// <item><b>Deleted</b> — server-side keys (exactly as stored) that no local file maps to;
+    /// sent back verbatim so the server can delete the matching rows.</item>
+    /// </list>
+    /// The previous implementation compared the absolute local key against the relative
+    /// server key directly — they never matched, so every watch start re-parsed the whole
+    /// repo and file deletions were undetectable (the stale-symbol bug's agent half).
     /// </summary>
-    internal static List<string> FindChangedFiles(
+    internal static (List<string> Changed, List<string> Deleted) DiffAgainstServer(
         Dictionary<string, string> localHashes,
-        Dictionary<string, string> serverHashes)
+        Dictionary<string, string> serverHashes,
+        string rootPath)
     {
-        var changed = new List<string>();
-
-        foreach (var (filePath, hash) in localHashes)
+        // Every local file under both its absolute and relative form → hash.
+        var localByAnyForm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (absPath, hash) in localHashes)
         {
-            if (!serverHashes.TryGetValue(filePath, out var serverHash) || serverHash != hash)
+            localByAnyForm[absPath] = hash;
+            localByAnyForm[ToRelativePath(absPath, rootPath)] = hash;
+        }
+
+        var changed = new List<string>();
+        foreach (var (absPath, hash) in localHashes)
+        {
+            var relPath = ToRelativePath(absPath, rootPath);
+            if (!serverHashes.TryGetValue(relPath, out var serverHash)
+                && !serverHashes.TryGetValue(absPath, out serverHash))
             {
-                changed.Add(filePath);
+                changed.Add(absPath);
+            }
+            else if (!string.Equals(serverHash, hash, StringComparison.Ordinal))
+            {
+                changed.Add(absPath);
             }
         }
 
-        return changed;
-    }
+        var deleted = serverHashes.Keys
+            .Where(serverKey => !localByAnyForm.ContainsKey(serverKey))
+            .ToList();
 
-    private List<string> FindChangedFiles(Dictionary<string, string> localHashes)
-        => FindChangedFiles(localHashes, _serverHashes);
+        return (changed, deleted);
+    }
 
     internal static string ComputeFileHash(string filePath)
     {
@@ -636,12 +714,42 @@ public sealed class LocalIndexer
         || path.EndsWith(".jsx", StringComparison.OrdinalIgnoreCase)
         || path.EndsWith(".py", StringComparison.OrdinalIgnoreCase);
 
-    private string ToRelativePath(string absolutePath)
+    private string ToRelativePath(string absolutePath) => ToRelativePath(absolutePath, _rootPath);
+
+    internal static string ToRelativePath(string absolutePath, string rootPath)
     {
-        if (string.IsNullOrEmpty(_rootPath) || !absolutePath.StartsWith(_rootPath, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrEmpty(rootPath) || !absolutePath.StartsWith(rootPath, StringComparison.OrdinalIgnoreCase))
             return absolutePath;
 
-        return absolutePath[_rootPath.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return absolutePath[rootPath.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    /// <summary>
+    /// Report watch-agent liveness to the server (fire-and-forget semantics: failures
+    /// are logged at debug level and never disturb the watch loop). Sent on watch
+    /// start, after every flush outcome, and on a periodic idle timer, so
+    /// list_repositories can tell a healthy-idle watch from a zombie one.
+    /// </summary>
+    public async Task PostHeartbeatAsync(int consecutiveFailures, string? lastError, CancellationToken ct = default)
+    {
+        try
+        {
+            var payload = new
+            {
+                projectName = _projectName,
+                agentVersion = CortexPlexus.Core.AgentInfo.Version,
+                lastSyncUtc = LastSyncUtc,
+                consecutiveFailures,
+                lastError
+            };
+            var url = $"{_serverUrl}/api/agent/heartbeat";
+            using var response = await _httpClient.PostAsJsonAsync(url, payload, JsonOptions, ct);
+            // 404 = repo not registered yet (first upload still pending) — expected, ignore.
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Heartbeat POST failed (server unreachable?) — will retry on next beat");
+        }
     }
 
     private object ToSymbolDto(CodeSymbol symbol)

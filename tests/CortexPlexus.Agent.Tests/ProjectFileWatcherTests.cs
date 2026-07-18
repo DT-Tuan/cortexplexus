@@ -1,17 +1,158 @@
 using CortexPlexus.Agent;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CortexPlexus.Agent.Tests;
 
 /// <summary>
-/// Tests cho ProjectFileWatcher.IsWatchedFile — pure filter logic.
+/// Tests cho ProjectFileWatcher.IsWatchedFile — pure filter logic — plus the
+/// flush-failure handling (zombie-watch fix): re-queue on failure, consecutive
+/// failure counting, fatal signal after MaxConsecutiveFlushFailures.
 ///
 /// Phạm vi: TEST-PLAN.md #94, #95, #96
 ///
 /// Lưu ý: debounce behavior (#92, #93) cần real FileSystemWatcher → flaky test.
-/// Tôi thay thế bằng path filter tests (deterministic, sub-ms).
+/// Flush-failure tests drive FlushChangesAsync directly via internal hooks —
+/// deterministic, no FS events involved.
 /// </summary>
 public class ProjectFileWatcherTests
 {
+    // Watcher ctor needs an existing directory for FileSystemWatcher.
+    private static (ProjectFileWatcher watcher, Action cleanup) CreateWatcher()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"cortex-watch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var watcher = new ProjectFileWatcher(dir, NullLogger.Instance, debounceDelay: TimeSpan.FromMilliseconds(10));
+        return (watcher, () =>
+        {
+            watcher.Dispose();
+            Directory.Delete(dir, recursive: true);
+        });
+    }
+
+    // === Zombie-watch fix: flush failure handling ===
+
+    [Fact]
+    public async Task FlushChangesAsync_CallbackFails_RequeuesBatchAndCountsFailure()
+    {
+        var (watcher, cleanup) = CreateWatcher();
+        try
+        {
+            watcher.SetCallbackForTest(_ => throw new InvalidOperationException("boom"));
+            watcher.EnqueueChangeForTest("/repo/a.cs");
+            watcher.EnqueueChangeForTest("/repo/b.cs");
+
+            await watcher.FlushChangesAsync();
+
+            // The failed batch must NOT be dropped — that was the data-loss half of
+            // the zombie-watch bug (changes detected but never uploaded, forever).
+            Assert.Equal(2, watcher.PendingChangeCountForTest);
+            Assert.Equal(1, watcher.ConsecutiveFlushFailures);
+            Assert.False(watcher.FatalTaskForTest.IsCompleted);
+        }
+        finally
+        {
+            cleanup();
+        }
+    }
+
+    [Fact]
+    public async Task FlushChangesAsync_SuccessAfterFailures_ResetsCounter()
+    {
+        var (watcher, cleanup) = CreateWatcher();
+        try
+        {
+            var shouldFail = true;
+            watcher.SetCallbackForTest(_ =>
+                shouldFail ? throw new InvalidOperationException("boom") : Task.CompletedTask);
+
+            watcher.EnqueueChangeForTest("/repo/a.cs");
+            await watcher.FlushChangesAsync();
+            Assert.Equal(1, watcher.ConsecutiveFlushFailures);
+
+            shouldFail = false;
+            await watcher.FlushChangesAsync(); // re-queued batch flushes clean
+            Assert.Equal(0, watcher.ConsecutiveFlushFailures);
+            Assert.Equal(0, watcher.PendingChangeCountForTest);
+            Assert.False(watcher.FatalTaskForTest.IsCompleted);
+        }
+        finally
+        {
+            cleanup();
+        }
+    }
+
+    [Fact]
+    public async Task FlushChangesAsync_MaxConsecutiveFailures_SignalsFatal()
+    {
+        var (watcher, cleanup) = CreateWatcher();
+        try
+        {
+            var cause = new InvalidOperationException("MSBuildWorkspace exploded");
+            watcher.SetCallbackForTest(_ => throw cause);
+            watcher.EnqueueChangeForTest("/repo/a.cs");
+
+            for (var i = 0; i < ProjectFileWatcher.MaxConsecutiveFlushFailures; i++)
+                await watcher.FlushChangesAsync();
+
+            // 5th consecutive failure → fatal signal so the host exits non-zero and
+            // systemd recycles the process instead of leaving a zombie watch.
+            Assert.True(watcher.FatalTaskForTest.IsCompleted);
+            Assert.Same(cause, await watcher.FatalTaskForTest);
+        }
+        finally
+        {
+            cleanup();
+        }
+    }
+
+    [Fact]
+    public async Task WatchAsync_FatalSignal_ThrowsWatchFailedException()
+    {
+        var (watcher, cleanup) = CreateWatcher();
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var watchTask = watcher.WatchAsync(_ => throw new InvalidOperationException("boom"), cts.Token);
+
+            watcher.EnqueueChangeForTest("/repo/a.cs");
+            for (var i = 0; i < ProjectFileWatcher.MaxConsecutiveFlushFailures; i++)
+                await watcher.FlushChangesAsync();
+
+            var ex = await Assert.ThrowsAsync<WatchFailedException>(() => watchTask);
+            Assert.IsType<InvalidOperationException>(ex.InnerException);
+        }
+        finally
+        {
+            cleanup();
+        }
+    }
+
+    [Fact]
+    public async Task FlushChangesAsync_FlushCompleted_ReportsOutcome()
+    {
+        var (watcher, cleanup) = CreateWatcher();
+        try
+        {
+            var outcomes = new List<Exception?>();
+            watcher.FlushCompleted += outcomes.Add;
+
+            watcher.SetCallbackForTest(_ => throw new InvalidOperationException("boom"));
+            watcher.EnqueueChangeForTest("/repo/a.cs");
+            await watcher.FlushChangesAsync();
+
+            watcher.SetCallbackForTest(_ => Task.CompletedTask);
+            await watcher.FlushChangesAsync();
+
+            Assert.Equal(2, outcomes.Count);
+            Assert.IsType<InvalidOperationException>(outcomes[0]);
+            Assert.Null(outcomes[1]);
+        }
+        finally
+        {
+            cleanup();
+        }
+    }
+
     // === #95: Filter_WatchedExtensions_Only ===
     [Theory]
     [InlineData("file.cs", true)]

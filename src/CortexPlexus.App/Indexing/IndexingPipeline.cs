@@ -70,10 +70,20 @@ public sealed class IndexingPipeline(
 
         logger.LogInformation("Repository: {Name} ({Path})", repo.Name, repo.Path);
 
+        // Single enumeration reused by change detection, hash bookkeeping and the
+        // stale-symbol sweep — keeps all three views of "what is on disk" identical.
+        var currentFiles = EnumerateIndexableFiles(path);
+
         // Check for changed files (incremental indexing)
-        var changedFiles = await GetChangedFilesAsync(path, repo.Id, ct);
+        var changedFiles = await GetChangedFilesAsync(currentFiles, repo.Id, ct);
         if (changedFiles is { Count: 0 })
         {
+            // No content changes — but files may have been DELETED since the last run
+            // (a pure deletion alters no surviving hash). Sweep before skipping, or the
+            // graph serves ghosts of the deleted files forever.
+            var swept = await SweepDeletedFilesAsync(repo.Id, currentFiles, ct);
+            if (swept > 0)
+                await repositoryStore.UpdateLastIndexedAsync(repo.Id, ct);
             logger.LogInformation("No files changed since last index. Skipping.");
             return new IndexingStats(sw.Elapsed, 0, 0, 0);
         }
@@ -235,8 +245,13 @@ public sealed class IndexingPipeline(
         await vectorStore.UpsertAsync(validSymbols, embeddings, ct);
 
         // Update file hashes + last indexed
-        await UpdateFileHashesAsync(path, repo.Id, ct);
+        await UpdateFileHashesAsync(currentFiles, repo.Id, ct);
         await repositoryStore.UpdateLastIndexedAsync(repo.Id, ct);
+
+        // Stale-symbol sweep — only after every upsert above succeeded, so a failed or
+        // partial run can never wipe live symbols. currentFiles is non-empty here
+        // (HasAnyIndexableFile guard), so the stores' empty-snapshot no-op cannot mask it.
+        await SweepDeletedFilesAsync(repo.Id, currentFiles, ct);
 
         Report(5, $"Indexed {parseResult.FilesProcessed} files, {validSymbols.Count} symbols");
         sw.Stop();
@@ -244,11 +259,12 @@ public sealed class IndexingPipeline(
     }
 
     /// <summary>
-    /// Returns null if no hashes exist (first index), empty list if nothing changed, or list of changed file paths.
+    /// Enumerate every indexable source/doc file under the repo root, excluding
+    /// build/dependency directories. Single source for change detection, hash
+    /// bookkeeping and the stale-symbol sweep.
     /// </summary>
-    private async Task<IReadOnlyList<string>?> GetChangedFilesAsync(string path, Guid repoId, CancellationToken ct)
-    {
-        var csFiles = IndexableExtensions
+    internal static List<string> EnumerateIndexableFiles(string path) =>
+        IndexableExtensions
             .SelectMany(ext => Directory.GetFiles(path, ext, SearchOption.AllDirectories))
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
                      && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
@@ -257,6 +273,34 @@ public sealed class IndexingPipeline(
                      && !f.Contains($"{Path.DirectorySeparatorChar}.venv{Path.DirectorySeparatorChar}"))
             .ToList();
 
+    /// <summary>
+    /// Delete symbols / graph vertices / file hashes of every file the repository has
+    /// on record that is NOT in <paramref name="presentFiles"/> (the current on-disk
+    /// enumeration). Returns the number of files swept. Safe by construction: an empty
+    /// <paramref name="presentFiles"/> makes the store calls no-ops.
+    /// </summary>
+    private async Task<int> SweepDeletedFilesAsync(
+        Guid repoId, IReadOnlyList<string> presentFiles, CancellationToken ct)
+    {
+        var sweptSymbolFiles = await vectorStore.SweepMissingFilesAsync(repoId, presentFiles, ct);
+        var sweptHashFiles = await repositoryStore.SweepFileHashesAsync(repoId, presentFiles, ct);
+        var sweptFiles = sweptSymbolFiles.Concat(sweptHashFiles)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (sweptFiles.Count == 0) return 0;
+
+        await graphStore.DeleteByFilePathsAsync(repoId, sweptFiles, ct);
+        logger.LogInformation(
+            "Stale-symbol sweep: removed entries of {Count} file(s) no longer on disk", sweptFiles.Count);
+        return sweptFiles.Count;
+    }
+
+    /// <summary>
+    /// Returns null if no hashes exist (first index), empty list if nothing changed, or list of changed file paths.
+    /// </summary>
+    private async Task<IReadOnlyList<string>?> GetChangedFilesAsync(
+        IReadOnlyList<string> csFiles, Guid repoId, CancellationToken ct)
+    {
         var changed = new List<string>();
         var hasAnyHash = false;
 
@@ -281,15 +325,8 @@ public sealed class IndexingPipeline(
         return changed;
     }
 
-    private async Task UpdateFileHashesAsync(string path, Guid repoId, CancellationToken ct)
+    private async Task UpdateFileHashesAsync(IReadOnlyList<string> allFiles, Guid repoId, CancellationToken ct)
     {
-        var allFiles = IndexableExtensions
-            .SelectMany(ext => Directory.GetFiles(path, ext, SearchOption.AllDirectories))
-            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
-                     && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
-                     && !f.Contains($"{Path.DirectorySeparatorChar}node_modules{Path.DirectorySeparatorChar}")
-                     && !f.Contains($"{Path.DirectorySeparatorChar}__pycache__{Path.DirectorySeparatorChar}"));
-
         foreach (var file in allFiles)
         {
             var hash = ComputeFileHash(file);

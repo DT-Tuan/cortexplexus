@@ -171,6 +171,101 @@ public sealed class RepositoryStore(NpgsqlDataSource dataSource) : IRepositorySt
         return result;
     }
 
+    public async Task<int> DeleteFileHashesAsync(
+        Guid repoId, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
+    {
+        if (filePaths.Count == 0) return 0;
+
+        const string sql = "DELETE FROM file_hashes WHERE repo_id = @repoId AND file_path = ANY(@paths)";
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("@repoId", repoId);
+        cmd.Parameters.AddWithValue("@paths", filePaths.ToArray());
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<string>> SweepFileHashesAsync(
+        Guid repoId, IReadOnlyCollection<string> presentFilePaths, CancellationToken ct = default)
+    {
+        // Empty snapshot = no-op; see IVectorStore.SweepMissingFilesAsync.
+        if (presentFilePaths.Count == 0) return [];
+
+        const string sql = """
+            DELETE FROM file_hashes
+            WHERE repo_id = @repoId AND NOT (file_path = ANY(@paths))
+            RETURNING file_path
+            """;
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("@repoId", repoId);
+        cmd.Parameters.AddWithValue("@paths", presentFilePaths.ToArray());
+
+        var removed = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            removed.Add(reader.GetString(0));
+        return removed;
+    }
+
+    public async Task UpsertWatchHeartbeatAsync(
+        Guid repoId, string agentVersion, DateTimeOffset? lastSyncUtc,
+        int consecutiveFailures, string? lastError, CancellationToken ct = default)
+    {
+        // last_sync only moves forward when the agent reports one — a failure
+        // heartbeat (lastSyncUtc null) must not erase the last known good sync.
+        const string sql = """
+            INSERT INTO agent_watch_status (repo_id, agent_version, last_heartbeat, last_sync, consecutive_failures, last_error)
+            VALUES (@repoId, @version, NOW(), @lastSync, @failures, @lastError)
+            ON CONFLICT (repo_id) DO UPDATE SET
+                agent_version = EXCLUDED.agent_version,
+                last_heartbeat = NOW(),
+                last_sync = COALESCE(EXCLUDED.last_sync, agent_watch_status.last_sync),
+                consecutive_failures = EXCLUDED.consecutive_failures,
+                last_error = EXCLUDED.last_error
+            """;
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("@repoId", repoId);
+        cmd.Parameters.AddWithValue("@version", agentVersion);
+        cmd.Parameters.AddWithValue("@lastSync", (object?)lastSyncUtc ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@failures", consecutiveFailures);
+        cmd.Parameters.AddWithValue("@lastError", (object?)lastError ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<WatchStatusInfo?> GetWatchStatusAsync(Guid repoId, CancellationToken ct = default)
+    {
+        const string sql = """
+            SELECT repo_id, agent_version, last_heartbeat, last_sync, consecutive_failures, last_error
+            FROM agent_watch_status
+            WHERE repo_id = @repoId
+            """;
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("@repoId", repoId);
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+            return null;
+
+        return new WatchStatusInfo(
+            RepoId: reader.GetGuid(0),
+            AgentVersion: reader.GetString(1),
+            LastHeartbeat: reader.GetFieldValue<DateTimeOffset>(2),
+            LastSync: reader.IsDBNull(3) ? null : reader.GetFieldValue<DateTimeOffset>(3),
+            ConsecutiveFailures: reader.GetInt32(4),
+            LastError: reader.IsDBNull(5) ? null : reader.GetString(5)
+        );
+    }
+
     private static RepositoryInfo ReadRepositoryInfo(NpgsqlDataReader reader)
     {
         return new RepositoryInfo(
