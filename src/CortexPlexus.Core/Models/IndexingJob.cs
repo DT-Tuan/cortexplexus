@@ -13,7 +13,13 @@ public sealed record RepositoryInfo(
     string Name,
     string Path,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? LastIndexed
+    DateTimeOffset? LastIndexed,
+    /// <summary>Provider that produced this repo's vectors (ADR-018). Null = unknown/legacy.</summary>
+    string? EmbeddingProvider = null,
+    /// <summary>Model id that produced this repo's vectors (ADR-018). Null = unknown/legacy.</summary>
+    string? EmbeddingModel = null,
+    /// <summary>Vector dimensions stamped with the space (ADR-018). Null = unknown/legacy.</summary>
+    int? EmbeddingDim = null
 );
 
 /// <summary>

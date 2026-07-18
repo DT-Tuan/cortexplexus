@@ -187,6 +187,34 @@ public static class AgentApiEndpoints
                 .Where(r => !string.IsNullOrWhiteSpace(r.FromFqn) && !string.IsNullOrWhiteSpace(r.ToFqn))
                 .ToList();
 
+            // Same allow-list as IndexingPipeline + the Health metric. See
+            // CortexPlexus.Core.EmbeddableKinds and docs/HEALTH-METRICS.md.
+            var embeddable = symbols
+                .Where(s => EmbeddableKinds.Contains(s.Kind))
+                .ToList();
+
+            // ADR-018 incremental-sync guard: refuse before any store write so the agent
+            // can force_reindex + full re-index without leaving a mixed-space partial.
+            // Keyed on FullReindex (all symbols re-embedded), NOT FullFileSnapshot (only
+            // the file-hash list is complete): an incremental IndexAsync sends a full
+            // snapshot for the sweep yet embeds a subset, so it must still be blocked on a
+            // space mismatch.
+            var currentSpace = EmbeddingSpaceResolver.FromOptions(embeddingOptions);
+            if (!request.FullReindex
+                && repo.EmbeddingProvider is not null
+                && (repo.EmbeddingProvider != currentSpace.Provider
+                    || repo.EmbeddingModel != currentSpace.Model)
+                && embeddable.Count >= 1)
+            {
+                var msg =
+                    $"repo '{repo.Name}' carries {repo.EmbeddingProvider}:{repo.EmbeddingModel} vectors " +
+                    $"but the server now embeds with {currentSpace.Provider}:{currentSpace.Model} — " +
+                    "run force_reindex then a full re-index (agent watch restart) to migrate. " +
+                    "Incremental embedding sync is blocked to prevent a mixed-space repo.";
+                logger.LogWarning("Rejecting incremental agent upload: {Message}", msg);
+                return Results.Json(new { error = msg }, statusCode: StatusCodes.Status409Conflict);
+            }
+
             // Generate AI summaries (optional, requires LLM)
             var summaryGen = scope.ServiceProvider.GetRequiredService<ISummaryGenerator>();
             if (summaryGen.IsEnabled)
@@ -219,12 +247,6 @@ public static class AgentApiEndpoints
 
             // Generate embeddings server-side (from signatures only, no source code)
             var embedSw = Stopwatch.StartNew();
-            // Same allow-list as IndexingPipeline + the Health metric. See
-            // CortexPlexus.Core.EmbeddableKinds and docs/HEALTH-METRICS.md.
-            var embeddable = symbols
-                .Where(s => EmbeddableKinds.Contains(s.Kind))
-                .ToList();
-
             var embeddings = await EmbeddingBatchHelper.GenerateEmbeddingsAsync(
                 embeddable, embeddingService, secretsScanner, logger,
                 embeddingOptions.MaxParallelBatches ?? 1, ct);
@@ -259,6 +281,18 @@ public static class AgentApiEndpoints
             foreach (var (filePath, hash) in request.FileHashes)
             {
                 await repoStore.UpdateFileHashAsync(filePath, repo.Id, hash, ct);
+            }
+
+            // ADR-018: stamp space only on the final commit of a genuine full re-index
+            // (FullReindex + the FileHashes-bearing chunk). Every symbol was re-embedded in
+            // the current space, so the stamp is truthful. Intermediate full-reindex chunks
+            // set FullReindex but carry empty hashes, so FileHashes.Count > 0 keeps the
+            // stamp on the final commit only; an incremental IndexAsync sets FullReindex=false
+            // and never restamps (which would falsely claim a subset-embed repo is pure).
+            if (request.FullReindex && request.FileHashes.Count > 0)
+            {
+                await repoStore.UpdateEmbeddingSpaceAsync(
+                    repo.Id, currentSpace.Provider, currentSpace.Model, currentSpace.Dimensions, ct);
             }
 
             // --- Stale-symbol removal (the "graph never forgets deleted files" fix) ---

@@ -323,6 +323,13 @@ void ConfigureServices(IServiceCollection services, string[] args, IConfiguratio
             options.VertexInstancesPerCall = ipc;
     });
 
+    // ADR-018: the server's CURRENT embedding space as a value singleton. Consumers
+    // (HybridQueryRouter, MCP tools) take the pure Core record instead of coupling to
+    // EmbeddingOptions — space-aware reads compare stored stamps against this.
+    services.AddSingleton(sp =>
+        EmbeddingSpaceResolver.FromOptions(
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<EmbeddingOptions>>().Value));
+
     // AI summary generation (optional, uses LLM)
     var summaryEnabled = Environment.GetEnvironmentVariable("Summary__Enabled") ?? "false";
     var summaryProvider = Environment.GetEnvironmentVariable("Summary__Provider") ?? "ollama";

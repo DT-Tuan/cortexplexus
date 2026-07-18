@@ -12,15 +12,29 @@ public sealed class HybridQueryRouterTests
     private readonly IFullTextStore _fullTextStore = Substitute.For<IFullTextStore>();
     private readonly IEmbeddingService _embeddingService = Substitute.For<IEmbeddingService>();
     private readonly IQueryExpander _queryExpander = Substitute.For<IQueryExpander>();
+    private readonly IRepositoryStore _repositoryStore = Substitute.For<IRepositoryStore>();
     private readonly HybridQueryRouter _router;
 
     public HybridQueryRouterTests()
     {
         // Default: query expansion disabled
         _queryExpander.IsEnabled.Returns(false);
+        _repositoryStore.ListAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<RepositoryInfo>>([]));
 
-        _router = new HybridQueryRouter(
+        _router = CreateRouter();
+    }
+
+    private static readonly EmbeddingSpace TestSpace = new("vertex", "text-embedding-005", 768);
+
+    private HybridQueryRouter CreateRouter(
+        EmbeddingSpace? currentSpace = null,
+        IRepositoryStore? repoStore = null)
+    {
+        return new HybridQueryRouter(
             _vectorStore, _fullTextStore, _embeddingService, _queryExpander,
+            repoStore ?? _repositoryStore,
+            currentSpace ?? TestSpace,
             NullLogger<HybridQueryRouter>.Instance);
     }
 
@@ -35,7 +49,7 @@ public sealed class HybridQueryRouterTests
 
         Assert.Single(results);
         Assert.Equal("A", results[0].Fqn);
-        await _vectorStore.DidNotReceive().SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+        await _vectorStore.DidNotReceive().SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -43,7 +57,7 @@ public sealed class HybridQueryRouterTests
     {
         var embedding = new float[] { 0.1f, 0.2f, 0.3f };
         _embeddingService.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(embedding);
-        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult> { MakeResult("B") });
 
         var results = await _router.SearchAsync(new SearchRequest("payment logic", SearchType.Vector));
@@ -78,7 +92,7 @@ public sealed class HybridQueryRouterTests
     public async Task SearchAsync_ExpandDisabled_DoesNotCallExpander()
     {
         _embeddingService.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new float[] { 0.1f });
-        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult>());
         _fullTextStore.SearchAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult>());
@@ -99,7 +113,7 @@ public sealed class HybridQueryRouterTests
             .Returns(new List<string> { "payment processing", "how to handle payments", "payment service implementation" });
 
         _embeddingService.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new float[] { 0.1f });
-        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult> { MakeResult("PaymentService") });
         _fullTextStore.SearchAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult> { MakeResult("PaymentHandler") });
@@ -117,7 +131,7 @@ public sealed class HybridQueryRouterTests
     {
         _queryExpander.IsEnabled.Returns(false);
         _embeddingService.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new float[] { 0.1f });
-        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult>());
         _fullTextStore.SearchAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult>());
@@ -136,7 +150,7 @@ public sealed class HybridQueryRouterTests
             .Returns("expanded hypothetical text");
         _embeddingService.EmbedAsync("expanded hypothetical text", Arg.Any<CancellationToken>())
             .Returns(new float[] { 0.5f });
-        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult> { MakeResult("Found") });
 
         var results = await _router.SearchAsync(new SearchRequest("test", SearchType.Vector, Expand: true));
@@ -156,7 +170,7 @@ public sealed class HybridQueryRouterTests
             .Returns(new List<string> { "test" });
 
         _embeddingService.EmbedAsync("test", Arg.Any<CancellationToken>()).Returns(new float[] { 0.1f });
-        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+        _vectorStore.SearchAsync(Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult>());
         _fullTextStore.SearchAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<SearchResult>());

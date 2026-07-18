@@ -189,36 +189,31 @@ public sealed class VectorStore(NpgsqlDataSource dataSource, ILogger<VectorStore
         int limit = 10,
         Guid? repoId = null,
         string? kind = null,
+        string? requireProvider = null,
+        string? requireModel = null,
         CancellationToken ct = default)
     {
-        var filters = new List<string>();
-        if (repoId.HasValue) filters.Add("repo_id = @repoId");
-        if (!string.IsNullOrEmpty(kind)) filters.Add("kind = @kind");
+        var filters = new List<string> { "cs.embedding IS NOT NULL" };
+        if (repoId.HasValue) filters.Add("cs.repo_id = @repoId");
+        if (!string.IsNullOrEmpty(kind)) filters.Add("cs.kind = @kind");
+        // ADR-018: cross-repo space filter. NULL stamp = legacy unknown → still searchable.
+        if (!string.IsNullOrEmpty(requireProvider) && !string.IsNullOrEmpty(requireModel))
+        {
+            filters.Add(
+                "(r.embedding_provider IS NULL OR (r.embedding_provider = @reqProv AND r.embedding_model = @reqModel))");
+        }
 
-        var whereClause = filters.Count > 0 ? "WHERE " + string.Join(" AND ", filters) : "";
+        var whereClause = "WHERE " + string.Join(" AND ", filters);
 
         var sql = $"""
-            SELECT fqn, name, kind, signature, file_path, start_line,
-                   1.0 - (embedding <=> @query) AS score, documentation, summary
-            FROM code_symbols
+            SELECT cs.fqn, cs.name, cs.kind, cs.signature, cs.file_path, cs.start_line,
+                   1.0 - (cs.embedding <=> @query) AS score, cs.documentation, cs.summary
+            FROM code_symbols cs
+            JOIN repositories r ON r.id = cs.repo_id
             {whereClause}
-            AND embedding IS NOT NULL
-            ORDER BY embedding <=> @query
+            ORDER BY cs.embedding <=> @query
             LIMIT @limit
             """;
-
-        // Fix WHERE/AND when no filters: replace leading "AND" with "WHERE"
-        if (filters.Count == 0)
-        {
-            sql = """
-                SELECT fqn, name, kind, signature, file_path, start_line,
-                       1.0 - (embedding <=> @query) AS score, documentation, summary
-                FROM code_symbols
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> @query
-                LIMIT @limit
-                """;
-        }
 
         await using var conn = await dataSource.OpenConnectionAsync(ct);
 
@@ -236,6 +231,11 @@ public sealed class VectorStore(NpgsqlDataSource dataSource, ILogger<VectorStore
 
         if (repoId.HasValue) cmd.Parameters.AddWithValue("@repoId", repoId.Value);
         if (!string.IsNullOrEmpty(kind)) cmd.Parameters.AddWithValue("@kind", kind);
+        if (!string.IsNullOrEmpty(requireProvider) && !string.IsNullOrEmpty(requireModel))
+        {
+            cmd.Parameters.AddWithValue("@reqProv", requireProvider);
+            cmd.Parameters.AddWithValue("@reqModel", requireModel);
+        }
 
         var results = new List<SearchResult>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -375,7 +375,13 @@ public sealed class VectorStore(NpgsqlDataSource dataSource, ILogger<VectorStore
                 start_line = EXCLUDED.start_line,
                 end_line = EXCLUDED.end_line,
                 repo_id = EXCLUDED.repo_id,
-                embedding = EXCLUDED.embedding,
+                -- COALESCE, not plain assign: an upsert that carries NO embedding
+                -- (skip-embeddings space-mismatch path, or a transient embed failure that
+                -- omits an FQN) must PRESERVE the existing vector, not NULL-wipe it.
+                -- EXCLUDED.embedding is only non-null when this batch actually produced a
+                -- vector for the row; otherwise keep whatever is already stored. Removal
+                -- goes through DeleteBy*; there is no "re-embed to null" intent.
+                embedding = COALESCE(EXCLUDED.embedding, code_symbols.embedding),
                 documentation = EXCLUDED.documentation,
                 summary = EXCLUDED.summary,
                 is_test_method = EXCLUDED.is_test_method,

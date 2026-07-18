@@ -5,14 +5,27 @@ using Microsoft.Extensions.Logging;
 
 namespace CortexPlexus.Search;
 
+/// <summary>
+/// Search results plus the ADR-018 embedding-space footer (skip / excluded / unknown),
+/// null when every touched repo matches the server's current space. Returned by value so
+/// the router keeps no per-call state — it is DI-scoped today, but nothing may rely on that.
+/// </summary>
+public sealed record HybridSearchOutcome(IReadOnlyList<SearchResult> Results, string? SpaceFooter);
+
 public sealed partial class HybridQueryRouter(
     IVectorStore vectorStore,
     IFullTextStore fullTextStore,
     IEmbeddingService embeddingService,
     IQueryExpander queryExpander,
+    IRepositoryStore repositoryStore,
+    EmbeddingSpace currentSpace,
     ILogger<HybridQueryRouter> logger)
 {
+    /// <summary>Back-compat entry point for callers that don't render footers (CLI, explore).</summary>
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(SearchRequest request, CancellationToken ct = default)
+        => (await SearchWithFooterAsync(request, ct)).Results;
+
+    public async Task<HybridSearchOutcome> SearchWithFooterAsync(SearchRequest request, CancellationToken ct = default)
     {
         var queryType = request.Type == SearchType.Hybrid
             ? ClassifyQuery(request.Query)
@@ -20,16 +33,25 @@ public sealed partial class HybridQueryRouter(
 
         logger.LogDebug("Query classified as {Type}: {Query} (expand={Expand})", queryType, request.Query, request.Expand);
 
-        return queryType switch
+        // ADR-018: only the vector leg is space-sensitive — plan once per call and thread
+        // it through; BM25/graph-classified queries never pay the repo-stamp lookup.
+        var (plan, footer) = queryType is SearchType.Vector or SearchType.Hybrid
+            ? await PlanVectorSpaceAsync(request.RepoId, ct)
+            : (VectorSpacePlan.AllowAll, null);
+
+        var results = queryType switch
         {
             SearchType.Graph => await SearchGraphAsync(request, ct),
-            SearchType.Vector => await SearchVectorAsync(request, ct),
+            SearchType.Vector => await SearchVectorAsync(request, plan, ct),
             SearchType.Bm25 => await SearchBm25Async(request, ct),
-            _ => await SearchHybridAsync(request, ct)
+            _ => await SearchHybridAsync(request, plan, ct)
         };
+
+        return new HybridSearchOutcome(results, footer);
     }
 
-    private async Task<IReadOnlyList<SearchResult>> SearchHybridAsync(SearchRequest request, CancellationToken ct)
+    private async Task<IReadOnlyList<SearchResult>> SearchHybridAsync(
+        SearchRequest request, VectorSpacePlan spacePlan, CancellationToken ct)
     {
         var useExpand = request.Expand && queryExpander.IsEnabled;
 
@@ -44,7 +66,7 @@ public sealed partial class HybridQueryRouter(
         var bm25Task = fullTextStore.SearchAsync(bm25Query, request.Limit, request.RepoId, request.Kind, ct);
 
         // Vector search uses original natural language query (better for semantic matching)
-        var vectorResults = await SafeVectorSearchAsync(request, useExpand, ct);
+        var vectorResults = await SafeVectorSearchAsync(request, useExpand, spacePlan, ct);
         var bm25Results = await bm25Task;
 
         if (vectorResults.Count == 0 && bm25Results.Count > 0)
@@ -70,18 +92,24 @@ public sealed partial class HybridQueryRouter(
     /// <summary>
     /// Attempts vector search; returns empty list on embedding failure (rate limit, network, etc.)
     /// instead of propagating the error. Hybrid search degrades to BM25-only.
+    /// Also applies the precomputed ADR-018 embedding-space plan (skip / filter).
     /// </summary>
     private async Task<IReadOnlyList<SearchResult>> SafeVectorSearchAsync(
-        SearchRequest request, bool useExpand, CancellationToken ct)
+        SearchRequest request, bool useExpand, VectorSpacePlan spacePlan, CancellationToken ct)
     {
         try
         {
+            if (spacePlan.SkipVectorLeg)
+                return [];
+
             if (useExpand)
-                return await SearchVectorWithHydeAsync(request, ct);
+                return await SearchVectorWithHydeAsync(request, spacePlan.RequireProvider, spacePlan.RequireModel, ct);
 
             var embedding = await embeddingService.EmbedAsync(request.Query, ct);
             if (embedding.Length == 0) return [];
-            return await vectorStore.SearchAsync(embedding, request.Limit, request.RepoId, request.Kind, ct);
+            return await vectorStore.SearchAsync(
+                embedding, request.Limit, request.RepoId, request.Kind,
+                spacePlan.RequireProvider, spacePlan.RequireModel, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -90,7 +118,67 @@ public sealed partial class HybridQueryRouter(
         }
     }
 
-    private async Task<IReadOnlyList<SearchResult>> SearchVectorWithHydeAsync(SearchRequest request, CancellationToken ct)
+    /// <summary>
+    /// Decide whether the vector leg may run, which space filter to apply, and the footer
+    /// to surface (ADR-018). Pure with respect to the router: everything travels by value.
+    /// </summary>
+    private async Task<(VectorSpacePlan Plan, string? Footer)> PlanVectorSpaceAsync(
+        Guid? repoId, CancellationToken ct)
+    {
+        var repos = await repositoryStore.ListAsync(ct);
+
+        if (repoId is { } id)
+        {
+            var repo = repos.FirstOrDefault(r => r.Id == id);
+            if (repo is null)
+                return (VectorSpacePlan.AllowAll, null);
+
+            if (repo.EmbeddingProvider is null)
+            {
+                // Legacy unstamped: vector leg runs, surface the unknown hint.
+                return (VectorSpacePlan.AllowAll, "space unknown — stamp by re-indexing");
+            }
+
+            if (repo.EmbeddingProvider != currentSpace.Provider
+                || repo.EmbeddingModel != currentSpace.Model)
+            {
+                var footer =
+                    $"⚠️ semantic leg skipped: repo carries {repo.EmbeddingProvider}:{repo.EmbeddingModel} vectors, " +
+                    $"server queries with {currentSpace.Provider}:{currentSpace.Model}. Re-index to migrate.";
+                return (VectorSpacePlan.Skip, footer);
+            }
+
+            return (VectorSpacePlan.AllowAll, null);
+        }
+
+        // Cross-repo: filter vector hits to matching (or NULL) stamps; report exclusions.
+        var mismatched = repos
+            .Where(r => r.EmbeddingProvider is not null
+                        && (r.EmbeddingProvider != currentSpace.Provider
+                            || r.EmbeddingModel != currentSpace.Model))
+            .ToList();
+        var crossRepoFooter = mismatched.Count > 0
+            ? $"{mismatched.Count} repo(s) excluded from semantic ranking (space mismatch: {string.Join(", ", mismatched.Select(r => r.Name))})"
+            : null;
+
+        var plan = new VectorSpacePlan(
+            SkipVectorLeg: false,
+            RequireProvider: currentSpace.Provider,
+            RequireModel: currentSpace.Model);
+        return (plan, crossRepoFooter);
+    }
+
+    private readonly record struct VectorSpacePlan(
+        bool SkipVectorLeg,
+        string? RequireProvider = null,
+        string? RequireModel = null)
+    {
+        public static VectorSpacePlan AllowAll => new(false);
+        public static VectorSpacePlan Skip => new(true);
+    }
+
+    private async Task<IReadOnlyList<SearchResult>> SearchVectorWithHydeAsync(
+        SearchRequest request, string? requireProvider, string? requireModel, CancellationToken ct)
     {
         // HyDE: generate hypothetical document, embed it, search
         var hypothetical = await queryExpander.ExpandHydeAsync(request.Query, ct);
@@ -99,7 +187,9 @@ public sealed partial class HybridQueryRouter(
         var embedding = await embeddingService.EmbedAsync(textToEmbed, ct);
 
         if (embedding.Length == 0) return [];
-        return await vectorStore.SearchAsync(embedding, request.Limit, request.RepoId, request.Kind, ct);
+        return await vectorStore.SearchAsync(
+            embedding, request.Limit, request.RepoId, request.Kind,
+            requireProvider, requireModel, ct);
     }
 
     private async Task<IReadOnlyList<SearchResult>> SearchMultiQueryAsync(SearchRequest request, CancellationToken ct)
@@ -120,28 +210,31 @@ public sealed partial class HybridQueryRouter(
         return resultSets.SelectMany(r => r).ToList();
     }
 
-    private async Task<IReadOnlyList<SearchResult>> EmbedAndSearchVectorAsync(
-        Task<float[]> embeddingTask, SearchRequest request, CancellationToken ct)
-    {
-        var embedding = await embeddingTask;
-        if (embedding.Length == 0) return [];
-        return await vectorStore.SearchAsync(embedding, request.Limit, request.RepoId, request.Kind, ct);
-    }
-
-    private async Task<IReadOnlyList<SearchResult>> SearchVectorAsync(SearchRequest request, CancellationToken ct)
+    private async Task<IReadOnlyList<SearchResult>> SearchVectorAsync(
+        SearchRequest request, VectorSpacePlan spacePlan, CancellationToken ct)
     {
         IReadOnlyList<SearchResult> vectorResults;
         try
         {
+            if (spacePlan.SkipVectorLeg)
+            {
+                // Pure vector mode: degrade to BM25 when space mismatch blocks the vector leg.
+                logger.LogInformation("Vector search skipped (space mismatch), falling back to BM25 for: {Query}", request.Query);
+                return await fullTextStore.SearchAsync(request.Query, request.Limit, request.RepoId, request.Kind, ct);
+            }
+
             if (request.Expand && queryExpander.IsEnabled)
             {
-                vectorResults = await SearchVectorWithHydeAsync(request, ct);
+                vectorResults = await SearchVectorWithHydeAsync(
+                    request, spacePlan.RequireProvider, spacePlan.RequireModel, ct);
             }
             else
             {
                 var embedding = await embeddingService.EmbedAsync(request.Query, ct);
                 vectorResults = embedding.Length > 0
-                    ? await vectorStore.SearchAsync(embedding, request.Limit, request.RepoId, request.Kind, ct)
+                    ? await vectorStore.SearchAsync(
+                        embedding, request.Limit, request.RepoId, request.Kind,
+                        spacePlan.RequireProvider, spacePlan.RequireModel, ct)
                     : [];
             }
         }

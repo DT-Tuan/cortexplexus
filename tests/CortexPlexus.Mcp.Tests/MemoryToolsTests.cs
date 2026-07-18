@@ -134,6 +134,7 @@ public sealed class MemoryToolsTests
                 Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string?>(),
                 Arg.Any<string?>(), Arg.Any<double>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<float[]?>(),
+                Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<int?>(),
                 Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new AgentMemory(
                 Id: id, Content: "x", Scope: MemoryScope.Global, ScopeId: null,
@@ -187,7 +188,7 @@ public sealed class MemoryToolsTests
         store.RecallAsync(
                 Arg.Any<float[]?>(), Arg.Any<string?>(), Arg.Any<string?>(),
                 Arg.Any<string?>(), Arg.Any<string?>(),
-                Arg.Any<int>(), Arg.Any<CancellationToken>())
+                Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<AgentMemoryResult>>(
                 Array.Empty<AgentMemoryResult>()));
 
@@ -206,7 +207,7 @@ public sealed class MemoryToolsTests
         store.RecallAsync(
                 Arg.Any<float[]?>(), Arg.Any<string?>(), Arg.Any<string?>(),
                 Arg.Any<string?>(), Arg.Any<string?>(),
-                Arg.Any<int>(), Arg.Any<CancellationToken>())
+                Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<AgentMemoryResult>>(
                 [new AgentMemoryResult(new AgentMemory(
                     Id: id, Content: "pref", Scope: MemoryScope.Global, ScopeId: null,
@@ -236,7 +237,7 @@ public sealed class MemoryToolsTests
         store.RecallAsync(
                 Arg.Any<float[]?>(), Arg.Any<string?>(), Arg.Any<string?>(),
                 Arg.Any<string?>(), Arg.Any<string?>(),
-                Arg.Any<int>(), Arg.Any<CancellationToken>())
+                Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<AgentMemoryResult>>(
                 [new AgentMemoryResult(new AgentMemory(
                     Id: Guid.NewGuid(), Content: "uses AGE", Scope: MemoryScope.Project,
@@ -361,6 +362,7 @@ public sealed class MemoryToolsTests
                 Arg.Any<string>(), Arg.Any<string>(), Arg.Is<string?>(s => s == repoId.ToString()),
                 Arg.Any<string?>(), Arg.Any<double>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<float[]?>(),
+                Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<int?>(),
                 Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new AgentMemory(
                 Id: Guid.NewGuid(), Content: "x",
@@ -387,6 +389,7 @@ public sealed class MemoryToolsTests
             Arg.Any<string>(), MemoryScope.Project, repoId.ToString(),
             Arg.Any<string?>(), Arg.Any<double>(),
             Arg.Any<IReadOnlyList<string>?>(), Arg.Any<float[]?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<int?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -418,6 +421,7 @@ public sealed class MemoryToolsTests
                 Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string?>(),
                 Arg.Any<string?>(), Arg.Any<double>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<float[]?>(),
+                Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<int?>(),
                 Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new AgentMemory(
                 Id: Guid.NewGuid(), Content: "x",
@@ -442,6 +446,7 @@ public sealed class MemoryToolsTests
             Arg.Any<string>(), MemoryScope.Project, realId.ToString(),
             Arg.Any<string?>(), Arg.Any<double>(),
             Arg.Any<IReadOnlyList<string>?>(), Arg.Any<float[]?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<int?>(),
             Arg.Any<CancellationToken>());
     }
 

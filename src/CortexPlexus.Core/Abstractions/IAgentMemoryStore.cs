@@ -24,11 +24,16 @@ public interface IAgentMemoryStore
         double importance,
         IReadOnlyList<string>? relatedFqns,
         float[]? embedding,
+        string? embeddingProvider = null,
+        string? embeddingModel = null,
+        int? embeddingDim = null,
         CancellationToken ct = default);
 
     /// <summary>
-    /// Semantic + filter recall. Wave 1 implements the filter path only. Wave 2 adds embedding-based
-    /// ranking + decay scoring. For Wave 1 <paramref name="queryEmbedding"/> may be ignored.
+    /// Semantic + filter recall. Wave 2 ranks by decay × cosine; foreign/unknown embedding
+    /// spaces (ADR-018) contribute a neutral 0.5 factor so content is still recalled.
+    /// Pass <paramref name="currentProvider"/>/<paramref name="currentModel"/> so the ranker
+    /// can detect space mismatch; omit them to keep legacy cosine-only ranking.
     /// </summary>
     Task<IReadOnlyList<AgentMemoryResult>> RecallAsync(
         float[]? queryEmbedding,
@@ -37,6 +42,8 @@ public interface IAgentMemoryStore
         string? topic,
         string? relatedFqn,
         int limit,
+        string? currentProvider = null,
+        string? currentModel = null,
         CancellationToken ct = default);
 
     /// <summary>Pure filter/paginate. No embedding compute. For management/audit.</summary>

@@ -22,7 +22,18 @@ public readonly record struct VectorUpsertResult(int Persisted, int Failed, int 
 public interface IVectorStore
 {
     Task<VectorUpsertResult> UpsertAsync(IEnumerable<CodeSymbol> symbols, IReadOnlyDictionary<string, float[]> embeddings, CancellationToken ct = default);
-    Task<IReadOnlyList<SearchResult>> SearchAsync(float[] queryEmbedding, int limit = 10, Guid? repoId = null, string? kind = null, CancellationToken ct = default);
+    /// <param name="requireProvider">
+    /// When set with <paramref name="requireModel"/>, restrict to repos whose stamp matches
+    /// or is NULL (legacy unknown). Used by cross-repo hybrid search (ADR-018).
+    /// </param>
+    Task<IReadOnlyList<SearchResult>> SearchAsync(
+        float[] queryEmbedding,
+        int limit = 10,
+        Guid? repoId = null,
+        string? kind = null,
+        string? requireProvider = null,
+        string? requireModel = null,
+        CancellationToken ct = default);
     Task DeleteByRepoAsync(Guid repoId, CancellationToken ct = default);
 
     /// <summary>

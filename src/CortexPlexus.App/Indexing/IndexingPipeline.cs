@@ -187,34 +187,59 @@ public sealed class IndexingPipeline(
             .Where(s => EmbeddableKinds.Contains(s.Kind))
             .ToList();
 
-        Report(2, $"Generating embeddings for {embeddable.Count} symbols");
-        logger.LogInformation("Generating embeddings for {Count} symbols...", embeddable.Count);
-
-        // Sub-progress: each batch finishing nudges the top-level progress value
-        // smoothly from 2 → 3 (fractional). Makes the progress bar move continuously
-        // during the longest phase (embedding, typically 60-80% of wall time).
-        var embedProgress = progress is null ? null : new Progress<(int Done, int Total)>(p =>
+        // ADR-018: incremental run against a stamped foreign space must not mix vectors.
+        // Skip embedding generation; symbols/graph/FTS still update; health shows the gap.
+        var currentSpace = EmbeddingSpaceResolver.FromOptions(_embeddingOptions);
+        var skipEmbeddings = false;
+        if (changedFiles is not null
+            && repo.EmbeddingProvider is not null
+            && (repo.EmbeddingProvider != currentSpace.Provider
+                || repo.EmbeddingModel != currentSpace.Model))
         {
-            if (p.Total == 0) return;
-            progress.Report(new ProgressNotificationValue
-            {
-                Progress = 2f + (float)p.Done / p.Total,
-                Total = totalPhases,
-                Message = $"Embedding batch {p.Done}/{p.Total}"
-            });
-        });
-        var embeddings = await GenerateEmbeddingsAsync(embeddable, ct, embedProgress);
+            skipEmbeddings = true;
+            logger.LogWarning(
+                "repo '{Name}' carries {StampedProvider}:{StampedModel} vectors but the server now embeds with {CurProvider}:{CurModel} — run force_reindex then a full re-index to migrate. Incremental embedding sync is blocked to prevent a mixed-space repo.",
+                repo.Name, repo.EmbeddingProvider, repo.EmbeddingModel,
+                currentSpace.Provider, currentSpace.Model);
+        }
 
-        var embeddedCount = embeddings.Count;
-        // Count failures against DISTINCT FQNs: method overloads (the Roslyn FQN omits
-        // parameters) and partial classes share an FQN and collapse into one embedding
-        // entry, so the raw embeddable.Count over-reports failures (R27-2). embeddings is
-        // keyed by FQN, so embeddedCount is already distinct.
-        var distinctEmbeddable = embeddable.Select(s => s.Fqn).Distinct().Count();
-        var failedEmbeddings = distinctEmbeddable - embeddedCount;
-        logger.LogInformation("Generated {Count} embeddings.", embeddedCount);
-        if (failedEmbeddings > 0)
-            logger.LogWarning("{Count} symbols failed to embed — semantic search will not cover them", failedEmbeddings);
+        Dictionary<string, float[]> embeddings;
+        if (skipEmbeddings)
+        {
+            Report(2, "Skipping embeddings (space mismatch)");
+            embeddings = new Dictionary<string, float[]>();
+        }
+        else
+        {
+            Report(2, $"Generating embeddings for {embeddable.Count} symbols");
+            logger.LogInformation("Generating embeddings for {Count} symbols...", embeddable.Count);
+
+            // Sub-progress: each batch finishing nudges the top-level progress value
+            // smoothly from 2 → 3 (fractional). Makes the progress bar move continuously
+            // during the longest phase (embedding, typically 60-80% of wall time).
+            var embedProgress = progress is null ? null : new Progress<(int Done, int Total)>(p =>
+            {
+                if (p.Total == 0) return;
+                progress.Report(new ProgressNotificationValue
+                {
+                    Progress = 2f + (float)p.Done / p.Total,
+                    Total = totalPhases,
+                    Message = $"Embedding batch {p.Done}/{p.Total}"
+                });
+            });
+            embeddings = await GenerateEmbeddingsAsync(embeddable, ct, embedProgress);
+
+            var embeddedCount = embeddings.Count;
+            // Count failures against DISTINCT FQNs: method overloads (the Roslyn FQN omits
+            // parameters) and partial classes share an FQN and collapse into one embedding
+            // entry, so the raw embeddable.Count over-reports failures (R27-2). embeddings is
+            // keyed by FQN, so embeddedCount is already distinct.
+            var distinctEmbeddable = embeddable.Select(s => s.Fqn).Distinct().Count();
+            var failedEmbeddings = distinctEmbeddable - embeddedCount;
+            logger.LogInformation("Generated {Count} embeddings.", embeddedCount);
+            if (failedEmbeddings > 0)
+                logger.LogWarning("{Count} symbols failed to embed — semantic search will not cover them", failedEmbeddings);
+        }
 
         // Generate AI summaries for methods (optional, requires LLM)
         if (summaryGenerator.IsEnabled)
@@ -247,6 +272,14 @@ public sealed class IndexingPipeline(
         // Update file hashes + last indexed
         await UpdateFileHashesAsync(currentFiles, repo.Id, ct);
         await repositoryStore.UpdateLastIndexedAsync(repo.Id, ct);
+
+        // ADR-018: stamp embedding space only on a full run (changedFiles is null).
+        // Incremental must not rewrite the stamp — that would claim mixed vectors are pure.
+        if (changedFiles is null)
+        {
+            await repositoryStore.UpdateEmbeddingSpaceAsync(
+                repo.Id, currentSpace.Provider, currentSpace.Model, currentSpace.Dimensions, ct);
+        }
 
         // Stale-symbol sweep — only after every upsert above succeeded, so a failed or
         // partial run can never wipe live symbols. currentFiles is non-empty here

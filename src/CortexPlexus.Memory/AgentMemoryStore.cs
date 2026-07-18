@@ -36,6 +36,9 @@ public sealed class AgentMemoryStore(
         double importance,
         IReadOnlyList<string>? relatedFqns,
         float[]? embedding,
+        string? embeddingProvider = null,
+        string? embeddingModel = null,
+        int? embeddingDim = null,
         CancellationToken ct = default)
     {
         if (!MemoryScope.IsValid(scope))
@@ -49,13 +52,23 @@ public sealed class AgentMemoryStore(
         if (importance is < 0.0 or > 1.0)
             throw new ArgumentException("Importance must be in [0, 1]", nameof(importance));
 
+        // Only stamp space when a vector was actually produced (ADR-018).
+        if (embedding is null)
+        {
+            embeddingProvider = null;
+            embeddingModel = null;
+            embeddingDim = null;
+        }
+
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT INTO agent_memories
-                (content, scope, scope_id, topic, importance, related_fqns, embedding)
+                (content, scope, scope_id, topic, importance, related_fqns, embedding,
+                 embedding_provider, embedding_model, embedding_dim)
             VALUES
-                (@content, @scope, @scope_id, @topic, @importance, @related_fqns, @embedding)
+                (@content, @scope, @scope_id, @topic, @importance, @related_fqns, @embedding,
+                 @embedding_provider, @embedding_model, @embedding_dim)
             RETURNING id, created_at, last_accessed_at, access_count
             """;
         cmd.Parameters.AddWithValue("content", content);
@@ -70,6 +83,9 @@ public sealed class AgentMemoryStore(
         cmd.Parameters.Add(embedding is null
             ? new NpgsqlParameter("embedding", DBNull.Value)
             : new NpgsqlParameter("embedding", new Vector(embedding)));
+        cmd.Parameters.AddWithValue("embedding_provider", (object?)embeddingProvider ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("embedding_model", (object?)embeddingModel ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("embedding_dim", (object?)embeddingDim ?? DBNull.Value);
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
@@ -95,6 +111,8 @@ public sealed class AgentMemoryStore(
         string? topic,
         string? relatedFqn,
         int limit,
+        string? currentProvider = null,
+        string? currentModel = null,
         CancellationToken ct = default)
     {
         limit = Math.Clamp(limit, 1, 50);
@@ -103,23 +121,20 @@ public sealed class AgentMemoryStore(
         var extraWhere = $"{MemoryScoring.ScoreSqlExpression} >= {MemoryScoring.ForgetThreshold.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
 
         // When a query embedding is supplied, combine decay with cosine similarity.
-        // When not, rank by decay alone. Rows without an embedding still appear via
-        // the filter query; they just contribute no semantic signal.
+        // Foreign/unknown spaces (ADR-018) get a neutral 0.5 factor — content still
+        // ranks, but never by garbage cross-space cosine. When currentProvider is
+        // null we keep the pre-ADR-018 cosine-only formula (callers that omit space).
         string orderClause;
         if (queryEmbedding is not null)
-        {
-            orderClause = $"ORDER BY ({MemoryScoring.ScoreSqlExpression}) * " +
-                          "COALESCE((1.0 - (embedding <=> @q)), 0.5) DESC NULLS LAST";
-        }
+            orderClause = BuildSemanticOrderClause(currentProvider is not null);
         else
-        {
             orderClause = $"ORDER BY ({MemoryScoring.ScoreSqlExpression}) DESC";
-        }
 
         var sql = BuildFilterSql(
             scope, scopeId, topic, relatedFqn, limit,
             extraWhere: extraWhere,
-            orderClause: orderClause);
+            orderClause: orderClause,
+            includeSpaceColumns: true);
 
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
@@ -127,6 +142,11 @@ public sealed class AgentMemoryStore(
         BindFilterParameters(cmd, scope, scopeId, topic, relatedFqn);
         if (queryEmbedding is not null)
             cmd.Parameters.Add(new NpgsqlParameter("q", new Vector(queryEmbedding)));
+        if (queryEmbedding is not null && currentProvider is not null)
+        {
+            cmd.Parameters.AddWithValue("curProvider", currentProvider);
+            cmd.Parameters.AddWithValue("curModel", (object?)currentModel ?? DBNull.Value);
+        }
 
         var results = new List<AgentMemoryResult>();
         var now = DateTimeOffset.UtcNow;
@@ -135,9 +155,17 @@ public sealed class AgentMemoryStore(
             while (await reader.ReadAsync(ct))
             {
                 var memory = ReadMemory(reader);
+                var rowProvider = reader.IsDBNull(10) ? null : reader.GetString(10);
+                var rowModel = reader.IsDBNull(11) ? null : reader.GetString(11);
+                // Foreign = current space known AND row stamp does not match it
+                // (NULL stamp = unknown legacy → also neutral, same CASE ELSE branch).
+                var foreign = currentProvider is not null
+                    && (rowProvider is null
+                        || !string.Equals(rowProvider, currentProvider, StringComparison.Ordinal)
+                        || !string.Equals(rowModel, currentModel, StringComparison.Ordinal));
                 // Client-side score mirrors the SQL expression (no cosine term without a query).
                 var score = MemoryScoring.Score(memory, now);
-                results.Add(new AgentMemoryResult(memory, score));
+                results.Add(new AgentMemoryResult(memory, score, ForeignEmbeddingSpace: foreign));
             }
         }
 
@@ -146,6 +174,29 @@ public sealed class AgentMemoryStore(
             await RecordAccessAsync(conn, results.Select(r => r.Memory.Id).ToArray(), ct);
 
         return results;
+    }
+
+    /// <summary>
+    /// ORDER BY for embedding-aware recall. Pure helper so unit tests can assert
+    /// the ADR-018 CASE without spinning up Postgres.
+    /// </summary>
+    internal static string BuildSemanticOrderClause(bool spaceAware)
+    {
+        if (!spaceAware)
+        {
+            return $"ORDER BY ({MemoryScoring.ScoreSqlExpression}) * " +
+                   "COALESCE((1.0 - (embedding <=> @q)), 0.5) DESC NULLS LAST";
+        }
+
+        // Matched space → cosine (NULL embedding → 0.5). Foreign/unknown → neutral 0.5.
+        return $"""
+            ORDER BY ({MemoryScoring.ScoreSqlExpression}) *
+              CASE WHEN embedding_provider IS NOT DISTINCT FROM @curProvider
+                    AND embedding_model    IS NOT DISTINCT FROM @curModel
+                   THEN COALESCE((1.0 - (embedding <=> @q)), 0.5)
+                   ELSE 0.5
+              END DESC NULLS LAST
+            """;
     }
 
     public async Task<IReadOnlyList<AgentMemory>> ListAsync(
@@ -234,7 +285,8 @@ public sealed class AgentMemoryStore(
         string? relatedFqn,
         int limit,
         string? extraWhere,
-        string orderClause)
+        string orderClause,
+        bool includeSpaceColumns = false)
     {
         var where = new List<string>();
         if (!string.IsNullOrWhiteSpace(scope) && scope != "all")
@@ -249,10 +301,13 @@ public sealed class AgentMemoryStore(
             where.Add(extraWhere);
 
         var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+        var spaceCols = includeSpaceColumns
+            ? ",\n                   embedding_provider, embedding_model"
+            : "";
 
         return $"""
             SELECT id, content, scope, scope_id, topic, importance, related_fqns,
-                   created_at, last_accessed_at, access_count
+                   created_at, last_accessed_at, access_count{spaceCols}
             FROM agent_memories
             {whereClause}
             {orderClause}

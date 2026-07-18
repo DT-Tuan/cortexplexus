@@ -16,6 +16,10 @@ namespace CortexPlexus.Integration.Tests;
 [Collection("Postgres")]
 public sealed class HybridSearchIntegrationTests(PostgresFixture fixture)
 {
+    // ADR-018: router ctor takes the server's current space; seeded repos are unstamped
+    // (NULL) so the space filter must not exclude them — that IS part of what we test.
+    private static readonly EmbeddingSpace TestSpace = new("test", "test-model", 768);
+
     [Fact]
     public async Task HybridSearch_FusesBm25AndVector()
     {
@@ -49,6 +53,7 @@ public sealed class HybridSearchIntegrationTests(PostgresFixture fixture)
 
         var router = new HybridQueryRouter(
             vectorStore, fullTextStore, embeddingService, queryExpander,
+            new RepositoryStore(ds), TestSpace,
             NullLogger<HybridQueryRouter>.Instance);
 
         // Hybrid search — should use BOTH vector (via embedding) and BM25
@@ -78,6 +83,7 @@ public sealed class HybridSearchIntegrationTests(PostgresFixture fixture)
 
         var router = new HybridQueryRouter(
             vectorStore, fullTextStore, embeddingService, queryExpander,
+            new RepositoryStore(ds), TestSpace,
             NullLogger<HybridQueryRouter>.Instance);
 
         var results = await router.SearchAsync(
@@ -113,6 +119,7 @@ public sealed class HybridSearchIntegrationTests(PostgresFixture fixture)
 
         var router = new HybridQueryRouter(
             vectorStore, fullTextStore, embeddingService, queryExpander,
+            new RepositoryStore(ds), TestSpace,
             NullLogger<HybridQueryRouter>.Instance);
 
         var results = await router.SearchAsync(
@@ -154,6 +161,7 @@ public sealed class HybridSearchIntegrationTests(PostgresFixture fixture)
 
         var router = new HybridQueryRouter(
             vectorStore, fullTextStore, embeddingService, queryExpander,
+            new RepositoryStore(ds), TestSpace,
             NullLogger<HybridQueryRouter>.Instance);
 
         var results = await router.SearchAsync(
@@ -196,6 +204,7 @@ public sealed class HybridSearchIntegrationTests(PostgresFixture fixture)
 
         var router = new HybridQueryRouter(
             vectorStore, fullTextStore, embeddingService, queryExpander,
+            new RepositoryStore(ds), TestSpace,
             NullLogger<HybridQueryRouter>.Instance);
 
         // "AuthService" matches BOTH vector (exact embedding) AND BM25 (keyword in name)
@@ -205,6 +214,50 @@ public sealed class HybridSearchIntegrationTests(PostgresFixture fixture)
         Assert.NotEmpty(results);
         // AuthService appears in both sources → RRF gives highest score
         Assert.Equal("R.AuthService", results[0].Fqn);
+    }
+
+    [Fact]
+    public async Task Upsert_WithoutEmbedding_PreservesExistingVector()
+    {
+        // ADR-018 / finder: a re-upsert that carries NO embedding (skip-embeddings
+        // space-mismatch path, or a transient embed failure that omits an FQN) must
+        // PRESERVE the stored vector via COALESCE, not NULL-wipe it. Before the fix,
+        // ON CONFLICT SET embedding = EXCLUDED.embedding destroyed good vectors.
+        await using var ds = fixture.CreateDataSource();
+        var repoId = await fixture.SeedRepositoryAsync(ds, "coalesce", "/coalesce");
+        var vectorStore = new VectorStore(ds, NullLogger<VectorStore>.Instance);
+        try
+        {
+            var emb = NormalizedEmbedding(0.42f);
+            await vectorStore.UpsertAsync(
+                [MakeClass("C.Service", "Service", repoId)],
+                new Dictionary<string, float[]> { ["C.Service"] = emb });
+
+            Assert.True(await HasEmbedding(ds, "C.Service"), "precondition: vector stored");
+
+            // Re-upsert the SAME symbol with an EMPTY embeddings map (the skip path).
+            await vectorStore.UpsertAsync(
+                [MakeClass("C.Service", "Service", repoId)],
+                new Dictionary<string, float[]>());
+
+            Assert.True(await HasEmbedding(ds, "C.Service"),
+                "vector must survive an embedding-less re-upsert (COALESCE), not be NULL-wiped");
+        }
+        finally
+        {
+            // The Postgres fixture is shared across this collection; drop this repo's rows
+            // so the seeded vector can't pollute another test's unfiltered vector search.
+            await vectorStore.DeleteByRepoAsync(repoId);
+        }
+    }
+
+    private static async Task<bool> HasEmbedding(Npgsql.NpgsqlDataSource ds, string fqn)
+    {
+        await using var conn = await ds.OpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT embedding IS NOT NULL FROM code_symbols WHERE fqn = @fqn";
+        cmd.Parameters.AddWithValue("@fqn", fqn);
+        return (bool)(await cmd.ExecuteScalarAsync() ?? false);
     }
 
     // --- Helpers ---

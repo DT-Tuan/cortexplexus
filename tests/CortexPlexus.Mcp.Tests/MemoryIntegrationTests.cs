@@ -52,7 +52,7 @@ public sealed class MemoryIntegrationTests
         await memoryStore.DidNotReceive().RecallAsync(
             Arg.Any<float[]?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<string?>(), Arg.Any<string?>(),
-            Arg.Any<int>(), Arg.Any<CancellationToken>());
+            Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public sealed class MemoryIntegrationTests
         await memoryStore.DidNotReceive().RecallAsync(
             Arg.Any<float[]?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<string?>(), Arg.Any<string?>(),
-            Arg.Any<int>(), Arg.Any<CancellationToken>());
+            Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
         Assert.DoesNotContain("Linked Memories", result);
     }
 
@@ -99,7 +99,7 @@ public sealed class MemoryIntegrationTests
         memoryStore.RecallAsync(
                 Arg.Any<float[]?>(), Arg.Any<string?>(), Arg.Any<string?>(),
                 Arg.Any<string?>(), Arg.Is<string?>("App.Target"),
-                Arg.Any<int>(), Arg.Any<CancellationToken>())
+                Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<AgentMemoryResult>>(
                 [MakeMemory("Team prefers async/await on this class", MemoryTopic.Preference)]));
 
@@ -131,7 +131,7 @@ public sealed class MemoryIntegrationTests
         memoryStore.RecallAsync(
                 Arg.Any<float[]?>(), Arg.Any<string?>(), Arg.Any<string?>(),
                 Arg.Any<string?>(), Arg.Any<string?>(),
-                Arg.Any<int>(), Arg.Any<CancellationToken>())
+                Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns<Task<IReadOnlyList<AgentMemoryResult>>>(_ => throw new InvalidOperationException("boom"));
 
         var result = await GraphTraversalTools.GetImpactAnalysis(

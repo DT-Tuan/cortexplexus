@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using CortexPlexus.Core.Abstractions;
 using CortexPlexus.Core.Models;
+
 using CortexPlexus.Memory;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
@@ -49,6 +50,7 @@ public sealed class MemoryTools
         ISecretsScanner secrets = default!,
         IRepositoryStore repoStore = default!,
         IOptions<MemoryOptions> options = default!,
+        EmbeddingSpace? currentSpace = null,
         CancellationToken ct = default)
     {
         if (!options.Value.Enabled) return DisabledMessage;
@@ -94,9 +96,13 @@ public sealed class MemoryTools
 
         try
         {
+            // ADR-018: stamp the space that produced this vector (null when absent or when
+            // the composition root registered no current space — never fabricate one).
+            var space = embedding is { Length: > 0 } ? currentSpace : null;
             var saved = await store.SaveAsync(
                 content, scope!, scopeId, topic,
-                importanceValue, relatedFqns, embedding, ct);
+                importanceValue, relatedFqns, embedding,
+                space?.Provider, space?.Model, space?.Dimensions, ct);
 
             return JsonSerializer.Serialize(new
             {
@@ -133,6 +139,7 @@ public sealed class MemoryTools
         IEmbeddingService embeddings = default!,
         IRepositoryStore repoStore = default!,
         IOptions<MemoryOptions> options = default!,
+        EmbeddingSpace? currentSpace = null,
         CancellationToken ct = default)
     {
         if (!options.Value.Enabled) return DisabledMessage;
@@ -162,9 +169,13 @@ public sealed class MemoryTools
             queryEmbedding = null; // Fall back to filter-only recall.
         }
 
+        // ADR-018: pass the current space so foreign-space rows rank neutrally. When no
+        // space is registered (legacy hosts, bare test harnesses) recall keeps the
+        // pre-ADR-018 cosine-only ranking rather than pretending to know the space.
         var hits = await store.RecallAsync(
             queryEmbedding, scope, scopeId, topic, relatedFqn,
-            Math.Clamp(limit, 1, 50), ct);
+            Math.Clamp(limit, 1, 50),
+            currentSpace?.Provider, currentSpace?.Model, ct);
 
         if (hits.Count == 0)
             return "No memories matched. Try broader scope='all' or remove topic/relatedFqn filters.";
@@ -173,9 +184,19 @@ public sealed class MemoryTools
         // memory to a project (essential for cross-project recall, where scope='all' mixes repos).
         var repoNames = await BuildRepoNameMapAsync(repoStore, ct);
 
+        // ADR-018: how many hits were ranked WITHOUT a semantic score because their
+        // embedding space differs from (or is unknown to) the server's current one.
+        // Carried as a JSON field, NOT trailing prose — the tool output must stay valid
+        // JSON for clients that parse it (recall's non-match branch is the only prose case).
+        var foreignCount = hits.Count(h => h.ForeignEmbeddingSpace);
+        var spaceNote = foreignCount > 0
+            ? $"{foreignCount} mem(s) ranked by content only — their embedding space differs from the server's current one (foreign/unknown); re-index or backfill to restore semantic ranking."
+            : null;
+
         return JsonSerializer.Serialize(new
         {
             count = hits.Count,
+            spaceNote,
             memories = hits.Select(h => new
             {
                 id = h.Memory.Id,
@@ -186,6 +207,7 @@ public sealed class MemoryTools
                 topic = h.Memory.Topic,
                 importance = h.Memory.Importance,
                 score = Math.Round(h.Score, 4),
+                foreignEmbeddingSpace = h.ForeignEmbeddingSpace,
                 relatedFqns = h.Memory.RelatedFqns,
                 createdAt = h.Memory.CreatedAt,
                 lastAccessedAt = h.Memory.LastAccessedAt,

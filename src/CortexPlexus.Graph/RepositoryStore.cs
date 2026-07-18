@@ -16,7 +16,8 @@ public sealed class RepositoryStore(NpgsqlDataSource dataSource) : IRepositorySt
             INSERT INTO repositories (name, path)
             VALUES (@name, @path)
             ON CONFLICT (path) DO UPDATE SET name = EXCLUDED.name
-            RETURNING id, name, path, created_at, last_indexed
+            RETURNING id, name, path, created_at, last_indexed,
+                      embedding_provider, embedding_model, embedding_dim
             """;
 
         await using var conn = await dataSource.OpenConnectionAsync(ct);
@@ -34,7 +35,8 @@ public sealed class RepositoryStore(NpgsqlDataSource dataSource) : IRepositorySt
     public async Task<RepositoryInfo?> GetByPathAsync(string path, CancellationToken ct = default)
     {
         const string sql = """
-            SELECT id, name, path, created_at, last_indexed
+            SELECT id, name, path, created_at, last_indexed,
+                   embedding_provider, embedding_model, embedding_dim
             FROM repositories
             WHERE path = @path
             """;
@@ -54,7 +56,8 @@ public sealed class RepositoryStore(NpgsqlDataSource dataSource) : IRepositorySt
     public async Task<IReadOnlyList<RepositoryInfo>> ListAsync(CancellationToken ct = default)
     {
         const string sql = """
-            SELECT id, name, path, created_at, last_indexed
+            SELECT id, name, path, created_at, last_indexed,
+                   embedding_provider, embedding_model, embedding_dim
             FROM repositories
             ORDER BY name
             """;
@@ -101,6 +104,27 @@ public sealed class RepositoryStore(NpgsqlDataSource dataSource) : IRepositorySt
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         cmd.Parameters.AddWithValue("@id", repoId);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task UpdateEmbeddingSpaceAsync(
+        Guid repoId, string provider, string model, int dim, CancellationToken ct = default)
+    {
+        const string sql = """
+            UPDATE repositories
+            SET embedding_provider = @provider,
+                embedding_model = @model,
+                embedding_dim = @dim
+            WHERE id = @id
+            """;
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("@id", repoId);
+        cmd.Parameters.AddWithValue("@provider", provider);
+        cmd.Parameters.AddWithValue("@model", model);
+        cmd.Parameters.AddWithValue("@dim", dim);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -273,7 +297,10 @@ public sealed class RepositoryStore(NpgsqlDataSource dataSource) : IRepositorySt
             Name: reader.GetString(1),
             Path: reader.GetString(2),
             CreatedAt: reader.GetFieldValue<DateTimeOffset>(3),
-            LastIndexed: reader.IsDBNull(4) ? null : reader.GetFieldValue<DateTimeOffset>(4)
+            LastIndexed: reader.IsDBNull(4) ? null : reader.GetFieldValue<DateTimeOffset>(4),
+            EmbeddingProvider: reader.IsDBNull(5) ? null : reader.GetString(5),
+            EmbeddingModel: reader.IsDBNull(6) ? null : reader.GetString(6),
+            EmbeddingDim: reader.IsDBNull(7) ? null : reader.GetInt32(7)
         );
     }
 }

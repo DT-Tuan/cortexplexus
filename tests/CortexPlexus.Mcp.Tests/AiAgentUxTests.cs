@@ -156,6 +156,7 @@ public class AiAgentUxTests
         var vector = Substitute.For<IVectorStore>();
         vector.SearchAsync(
                 Arg.Any<float[]>(), Arg.Any<int>(), Arg.Any<Guid?>(), Arg.Any<string?>(),
+                Arg.Any<string?>(), Arg.Any<string?>(),
                 Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<SearchResult>>([]));
 

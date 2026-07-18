@@ -16,6 +16,12 @@ public interface IRepositoryStore
     /// </summary>
     Task<int> DeleteAsync(Guid repoId, CancellationToken ct = default);
     Task UpdateLastIndexedAsync(Guid repoId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Stamp the embedding space that produced this repo's vectors (ADR-018).
+    /// Called only after a full index run succeeds — never on incremental sync.
+    /// </summary>
+    Task UpdateEmbeddingSpaceAsync(Guid repoId, string provider, string model, int dim, CancellationToken ct = default);
     Task<bool> IsFileChangedAsync(string filePath, Guid repoId, string contentHash, CancellationToken ct = default);
     Task UpdateFileHashAsync(string filePath, Guid repoId, string contentHash, CancellationToken ct = default);
     Task<Dictionary<string, string>> GetFileHashesAsync(Guid repoId, CancellationToken ct = default);

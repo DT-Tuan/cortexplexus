@@ -2,7 +2,9 @@ using System.ComponentModel;
 using CortexPlexus.Core;
 using CortexPlexus.Core.Abstractions;
 using CortexPlexus.Core.Models;
+
 using CortexPlexus.Search;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
 using Npgsql;
 
@@ -372,7 +374,8 @@ public sealed class GraphTraversalTools
         IRepositoryStore repoStore = default!,
         NpgsqlDataSource? dataSource = null,
         IAgentMemoryStore? memoryStore = null,
-        Microsoft.Extensions.Options.IOptions<CortexPlexus.Memory.MemoryOptions>? memoryOptions = null)
+        IOptions<CortexPlexus.Memory.MemoryOptions>? memoryOptions = null,
+        EmbeddingSpace? currentSpace = null)
     {
         var repos = await repoStore.ListAsync();
         if (repos.Count == 0)
@@ -448,6 +451,11 @@ public sealed class GraphTraversalTools
             {
                 sb.AppendLine("  Health: UNKNOWN — no rows in code_symbols for this repo.");
             }
+
+            // ADR-018: embedding-space stamp vs current server space (DI singleton;
+            // null in bare test harnesses → label renders without the mismatch check).
+            sb.AppendLine(
+                $"  Embedding: {FormatEmbeddingSpaceLabel(r.EmbeddingProvider, r.EmbeddingModel, r.EmbeddingDim, currentSpace)}");
 
             // Watch-agent liveness (zombie-watch fix): a watch process that is alive but
             // failing to upload used to be invisible — "Health: OK" + fresh-looking
@@ -528,6 +536,29 @@ public sealed class GraphTraversalTools
     }
 
     /// <summary>
+    /// Render the Embedding line for a repository (ADR-018). Pure logic so unit tests
+    /// can exercise matched / mismatch / unknown without Postgres.
+    /// </summary>
+    internal static string FormatEmbeddingSpaceLabel(
+        string? provider,
+        string? model,
+        int? dim,
+        EmbeddingSpace? current)
+    {
+        if (provider is null)
+            return "space unknown — stamp by re-indexing";
+
+        var label = $"{provider}/{model} ({dim ?? 0}d)";
+        if (current is not null
+            && (provider != current.Provider || model != current.Model))
+        {
+            return $"{label} ⚠️ mismatch — semantic_search degraded until re-index";
+        }
+
+        return label;
+    }
+
+    /// <summary>
     /// Render the Watch line for a repository from its agent-reported status. Pure logic
     /// (no DB / no clock access) so unit tests can exercise every branch. Null when no
     /// watch agent has ever reported for the repo — the line is omitted entirely.
@@ -602,22 +633,38 @@ public sealed class GraphTraversalTools
 
         int deletedHashes;
         await using (var conn = await dataSource.OpenConnectionAsync())
-        await using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = "DELETE FROM file_hashes WHERE repo_id = @repoId";
-            cmd.Parameters.AddWithValue("@repoId", match.Id);
-            deletedHashes = await cmd.ExecuteNonQueryAsync();
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "DELETE FROM file_hashes WHERE repo_id = @repoId";
+                cmd.Parameters.AddWithValue("@repoId", match.Id);
+                deletedHashes = await cmd.ExecuteNonQueryAsync();
+            }
+
+            // ADR-018: also clear the embedding-space stamp. force_reindex is the
+            // documented migration path after a provider switch; leaving the old stamp
+            // would keep the incremental space-mismatch 409 guard armed against the very
+            // full re-index this arms (and would mislabel the repo until the run finishes).
+            // Cleared → repo reads as "space unknown" until the full re-index re-stamps.
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText =
+                    "UPDATE repositories SET embedding_provider = NULL, embedding_model = NULL, embedding_dim = NULL WHERE id = @repoId";
+                cmd.Parameters.AddWithValue("@repoId", match.Id);
+                await cmd.ExecuteNonQueryAsync();
+            }
         }
 
         return $"""
             Force-reindex armed for '{match.Name}':
-              Hashes cleared: {deletedHashes}
-              Path:           {match.Path}
-              Next step:      call ActivateAgent (for .NET projects) or index_from_local (for server-side
-                              TS/JS/Py/Md) to run the full re-index. Existing symbols are refreshed by
-                              upsert on matching FQN, and the run's full file snapshot sweeps out stale
-                              entries whose source files no longer exist (agent v1.2.0+ or server-side
-                              indexing; older agents leave stale entries behind).
+              Hashes cleared:  {deletedHashes}
+              Embedding stamp: cleared (repo now reads 'space unknown' until the re-index re-stamps)
+              Path:            {match.Path}
+              Next step:       call ActivateAgent (for .NET projects) or index_from_local (for server-side
+                               TS/JS/Py/Md) to run the full re-index. Existing symbols are refreshed by
+                               upsert on matching FQN, and the run's full file snapshot sweeps out stale
+                               entries whose source files no longer exist (agent v1.2.0+ or server-side
+                               indexing; older agents leave stale entries behind).
             """;
     }
 }

@@ -73,6 +73,14 @@ CREATE TABLE IF NOT EXISTS public.agent_watch_status (
     last_error           TEXT
 );
 
+-- Embedding-space stamp (ADR-018): which (provider, model, dim) produced this repo's vectors.
+-- NULL = legacy/unknown (pre-migration); vector reads still run but tools surface an "unknown" hint.
+-- Stamped on full re-index only; incremental sync is refused on mismatch to prevent mixed spaces.
+ALTER TABLE public.repositories
+    ADD COLUMN IF NOT EXISTS embedding_provider TEXT,
+    ADD COLUMN IF NOT EXISTS embedding_model    TEXT,
+    ADD COLUMN IF NOT EXISTS embedding_dim      INT;
+
 -- Documentation + Summary columns (P0a/P0b)
 ALTER TABLE public.code_symbols ADD COLUMN IF NOT EXISTS documentation TEXT;
 ALTER TABLE public.code_symbols ADD COLUMN IF NOT EXISTS summary TEXT;
