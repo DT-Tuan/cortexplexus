@@ -15,6 +15,14 @@ public interface IGraphStore
     Task<IReadOnlyList<SearchResult>> QueryReferencedByAsync(string fqn, int depth = 1, CancellationToken ct = default);
     Task DeleteByRepoAsync(Guid repoId, CancellationToken ct = default);
 
+    /// <summary>
+    /// Detach-delete every vertex of a repository whose <c>file_path</c> property is in
+    /// <paramref name="filePaths"/>. Used by the stale-symbol sweep: symbols of deleted
+    /// source files were previously never removed (upsert-by-FQN never revisits a file
+    /// that no longer exists), so get_callers/search served ghosts at score 1.0.
+    /// </summary>
+    Task DeleteByFilePathsAsync(Guid repoId, IReadOnlyCollection<string> filePaths, CancellationToken ct = default);
+
     // Phase 3: .NET Deep Analysis queries
     Task<IReadOnlyList<SearchResult>> QueryDiRegistrationsAsync(string? serviceTypeFqn = null, Guid? repoId = null, CancellationToken ct = default);
     Task<IReadOnlyList<SearchResult>> QueryEntityMappingsAsync(string? entityName = null, Guid? repoId = null, CancellationToken ct = default);

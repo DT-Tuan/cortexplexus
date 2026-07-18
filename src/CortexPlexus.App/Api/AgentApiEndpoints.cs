@@ -152,10 +152,11 @@ public static class AgentApiEndpoints
                 return Results.BadRequest(new { error = "projectName is required" });
 
             // Relaxed validation cho chunked uploads: chấp nhận empty symbols nếu request mang
-            // relationships hoặc file hashes (intermediate hoặc final chunk).
-            // Pure-empty request vẫn bị reject (kẻ tấn công gửi rác).
-            if (request.Symbols.Count == 0 && request.Relationships.Count == 0 && request.FileHashes.Count == 0)
-                return Results.BadRequest(new { error = "Request must contain at least one of: symbols, relationships, fileHashes" });
+            // relationships, file hashes (intermediate hoặc final chunk) hoặc deleted files
+            // (deletion-only sync). Pure-empty request vẫn bị reject (kẻ tấn công gửi rác).
+            if (request.Symbols.Count == 0 && request.Relationships.Count == 0 && request.FileHashes.Count == 0
+                && request.DeletedFiles is not { Count: > 0 })
+                return Results.BadRequest(new { error = "Request must contain at least one of: symbols, relationships, fileHashes, deletedFiles" });
 
             var sw = Stopwatch.StartNew();
 
@@ -259,6 +260,50 @@ public static class AgentApiEndpoints
             {
                 await repoStore.UpdateFileHashAsync(filePath, repo.Id, hash, ct);
             }
+
+            // --- Stale-symbol removal (the "graph never forgets deleted files" fix) ---
+            // 1. Explicit deletions the agent observed (watch delete events / hash diff).
+            var staleFilesRemoved = 0;
+            if (request.DeletedFiles is { Count: > 0 })
+            {
+                var deadFiles = request.DeletedFiles
+                    .Where(f => !string.IsNullOrWhiteSpace(f))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (deadFiles.Count > 0)
+                {
+                    var deadRows = await vectorStore.DeleteByFilePathsAsync(repo.Id, deadFiles, ct);
+                    await graphStore.DeleteByFilePathsAsync(repo.Id, deadFiles, ct);
+                    await repoStore.DeleteFileHashesAsync(repo.Id, deadFiles, ct);
+                    staleFilesRemoved += deadFiles.Count;
+                    logger.LogInformation(
+                        "Removed {Rows} stale symbol rows across {Files} deleted file(s) for {Project}",
+                        deadRows, deadFiles.Count, request.ProjectName);
+                }
+            }
+
+            // 2. Snapshot sweep: on a full-index commit, anything not in the snapshot is
+            // gone from disk — drop it. Catches deletions the hash diff cannot see
+            // (e.g. right after force_reindex wiped the hash cache). Runs only after all
+            // upserts of this request succeeded, so a failed run never triggers a sweep.
+            if (request.FullFileSnapshot && request.FileHashes.Count > 0)
+            {
+                var snapshot = request.FileHashes.Keys.ToList();
+                var sweptSymbolFiles = await vectorStore.SweepMissingFilesAsync(repo.Id, snapshot, ct);
+                var sweptHashFiles = await repoStore.SweepFileHashesAsync(repo.Id, snapshot, ct);
+                var sweptFiles = sweptSymbolFiles.Concat(sweptHashFiles)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (sweptFiles.Count > 0)
+                {
+                    await graphStore.DeleteByFilePathsAsync(repo.Id, sweptFiles, ct);
+                    staleFilesRemoved += sweptFiles.Count;
+                    logger.LogInformation(
+                        "Snapshot sweep for {Project}: removed stale entries of {Files} file(s) no longer on disk",
+                        request.ProjectName, sweptFiles.Count);
+                }
+            }
+
             await repoStore.UpdateLastIndexedAsync(repo.Id, ct);
 
             sw.Stop();
@@ -280,11 +325,45 @@ public static class AgentApiEndpoints
                 SymbolsFailed = vectorResult.Failed,
                 VectorRowsWritten = vectorResult.VectorRowsWritten,
                 Warnings = warnings,
+                StaleFilesRemoved = staleFilesRemoved,
                 DurationSeconds = sw.Elapsed.TotalSeconds
                 // EmbeddingsPersisted / EmbeddingsFailed serialize automatically as
                 // computed-property aliases of SymbolsPersisted / SymbolsFailed
                 // (see IndexResultsResponse). Drop in v0.8.0.
             });
+        });
+
+        // --- Watch-agent heartbeat (zombie-watch visibility) ---
+        // The watch agent reports liveness + last successful sync + consecutive upload
+        // failures. list_repositories renders this as Watch: ACTIVE / FAILING /
+        // DISCONNECTED so a watch that is alive-but-uploading-nothing is visible in one
+        // call instead of silently serving weeks-stale results.
+
+        api.MapPost("/agent/heartbeat", async (
+            AgentHeartbeatRequest request,
+            IRepositoryStore repoStore,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.ProjectName))
+                return Results.BadRequest(new { error = "projectName is required" });
+
+            var repo = await repoStore.GetByPathAsync($"_agent/{request.ProjectName}", ct);
+            if (repo is null)
+                return Results.NotFound(new
+                {
+                    error = $"No agent-indexed repository named '{request.ProjectName}'. " +
+                            "The heartbeat is recorded only after the first index upload."
+                });
+
+            await repoStore.UpsertWatchHeartbeatAsync(
+                repo.Id,
+                string.IsNullOrWhiteSpace(request.AgentVersion) ? "unknown" : request.AgentVersion,
+                request.LastSyncUtc,
+                Math.Max(0, request.ConsecutiveFailures),
+                request.LastError,
+                ct);
+
+            return Results.Ok(new { ok = true });
         });
 
         // --- File Hashes (for incremental sync) ---

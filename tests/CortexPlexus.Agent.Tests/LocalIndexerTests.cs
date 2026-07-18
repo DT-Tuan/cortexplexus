@@ -28,11 +28,16 @@ public class LocalIndexerTests
         return (dir, () => Directory.Delete(dir, recursive: true));
     }
 
-    // === #102: FindChangedFiles_NewFiles_Detected ===
+    // === #102 (reworked for DiffAgainstServer): hash diff + deletion detection ===
+    //
+    // Server hashes are stored project-RELATIVE (the agent uploads them relative);
+    // local hashes are ABSOLUTE. The old FindChangedFiles compared the raw keys, which
+    // never matched — every watch start re-parsed the whole repo and deletions were
+    // undetectable (the stale-symbol bug). DiffAgainstServer normalizes both forms.
+
     [Fact]
-    public void FindChangedFiles_NewFileNotInServerHashes_Detected()
+    public void DiffAgainstServer_NewFileNotInServerHashes_Detected()
     {
-        // Mục đích: File mới (không có trong server hashes) → changed.
         var localHashes = new Dictionary<string, string>
         {
             ["/repo/new.cs"] = "hash1",
@@ -40,60 +45,102 @@ public class LocalIndexerTests
         };
         var serverHashes = new Dictionary<string, string>
         {
-            ["/repo/existing.cs"] = "hash2", // new.cs chưa có
+            ["existing.cs"] = "hash2", // relative form — new.cs chưa có
         };
 
-        var changed = LocalIndexer.FindChangedFiles(localHashes, serverHashes);
+        var (changed, deleted) = LocalIndexer.DiffAgainstServer(localHashes, serverHashes, "/repo");
 
         Assert.Contains("/repo/new.cs", changed);
         Assert.DoesNotContain("/repo/existing.cs", changed);
+        Assert.Empty(deleted);
     }
 
     [Fact]
-    public void FindChangedFiles_HashChanged_Detected()
+    public void DiffAgainstServer_HashChanged_Detected()
     {
-        // Mục đích: File có hash khác → changed.
         var localHashes = new Dictionary<string, string>
         {
             ["/repo/modified.cs"] = "new-hash",
         };
         var serverHashes = new Dictionary<string, string>
         {
-            ["/repo/modified.cs"] = "old-hash",
+            ["modified.cs"] = "old-hash",
         };
 
-        var changed = LocalIndexer.FindChangedFiles(localHashes, serverHashes);
+        var (changed, deleted) = LocalIndexer.DiffAgainstServer(localHashes, serverHashes, "/repo");
 
         Assert.Single(changed);
         Assert.Equal("/repo/modified.cs", changed[0]);
+        Assert.Empty(deleted);
     }
 
     [Fact]
-    public void FindChangedFiles_AllSameHashes_ReturnsEmpty()
+    public void DiffAgainstServer_RelativeServerKeys_MatchAbsoluteLocalKeys()
     {
+        // The regression this method exists for: identical content must diff to
+        // NOTHING even though local keys are absolute and server keys are relative.
         var localHashes = new Dictionary<string, string>
         {
-            ["/repo/a.cs"] = "h1",
-            ["/repo/b.cs"] = "h2",
+            ["/repo/src/a.cs"] = "h1",
+            ["/repo/src/b.cs"] = "h2",
         };
-        var serverHashes = new Dictionary<string, string>(localHashes);
+        var serverHashes = new Dictionary<string, string>
+        {
+            [$"src{Path.DirectorySeparatorChar}a.cs"] = "h1",
+            [$"src{Path.DirectorySeparatorChar}b.cs"] = "h2",
+        };
 
-        var changed = LocalIndexer.FindChangedFiles(localHashes, serverHashes);
+        var (changed, deleted) = LocalIndexer.DiffAgainstServer(localHashes, serverHashes, "/repo");
 
         Assert.Empty(changed);
+        Assert.Empty(deleted);
     }
 
     [Fact]
-    public void FindChangedFiles_EmptyLocalHashes_ReturnsEmpty()
+    public void DiffAgainstServer_LegacyAbsoluteServerKeys_StillMatch()
     {
-        // Mục đích: Local không có file nào → không có changes.
-        // Note: ChangedFiles không track "deleted files" (server hashes mà local không có) —
-        // đây là behavior hiện tại, ghi nhận bởi test.
-        var changed = LocalIndexer.FindChangedFiles(
-            [],
-            new Dictionary<string, string> { ["/repo/deleted.cs"] = "old" });
+        // Legacy servers stored absolute paths — those rows must not re-trigger a
+        // full parse nor be misreported as deletions.
+        var localHashes = new Dictionary<string, string> { ["/repo/a.cs"] = "h1" };
+        var serverHashes = new Dictionary<string, string> { ["/repo/a.cs"] = "h1" };
+
+        var (changed, deleted) = LocalIndexer.DiffAgainstServer(localHashes, serverHashes, "/repo");
 
         Assert.Empty(changed);
+        Assert.Empty(deleted);
+    }
+
+    [Fact]
+    public void DiffAgainstServer_ServerFileMissingLocally_ReportedDeleted()
+    {
+        // The stale-symbol case: DirectorService.cs deleted locally, server still has
+        // its hash. Must surface as deleted (verbatim server key) so the server can
+        // drop its rows — the old code silently ignored it forever.
+        var localHashes = new Dictionary<string, string> { ["/repo/kept.cs"] = "h1" };
+        var serverHashes = new Dictionary<string, string>
+        {
+            ["kept.cs"] = "h1",
+            ["deleted/DirectorService.cs"] = "h-old",
+        };
+
+        var (changed, deleted) = LocalIndexer.DiffAgainstServer(localHashes, serverHashes, "/repo");
+
+        Assert.Empty(changed);
+        Assert.Single(deleted);
+        Assert.Equal("deleted/DirectorService.cs", deleted[0]);
+    }
+
+    [Fact]
+    public void DiffAgainstServer_EmptyLocalHashes_ReportsAllServerFilesDeleted()
+    {
+        var (changed, deleted) = LocalIndexer.DiffAgainstServer(
+            [],
+            new Dictionary<string, string> { ["deleted.cs"] = "old" },
+            "/repo");
+
+        Assert.Empty(changed);
+        Assert.Single(deleted);
+        Assert.Equal("deleted.cs", deleted[0]);
     }
 
     // === #101 partial: ComputeFileHash determinism ===
