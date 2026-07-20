@@ -72,8 +72,14 @@ public sealed class MemoryTools
         if (!MemoryTopic.IsValid(topic))
             return $"Error: invalid topic '{topic}'. Valid: {string.Join(", ", MemoryTopic.All)}, or omit.";
 
-        if (secrets.ContainsSecrets(content))
-            return "Error: content appears to contain secrets or credentials. Sanitize before saving.";
+        // Name the trigger. The old message ("contains secrets — sanitize before saving")
+        // gave callers nothing to act on, so agents rewrote the same memory repeatedly
+        // without ever hitting the one offending token (issue #30).
+        var detected = secrets.DetectSecret(content);
+        if (detected is not null)
+            return $"Error: content appears to contain a credential — detected {detected}. " +
+                   "Remove or redact the VALUE and retry. Prose that merely discusses credentials " +
+                   "(\"use an Authorization: Bearer header\", \"the private_key field must never be logged\") is allowed.";
 
         var importanceValue = importance ?? options.Value.DefaultImportance;
         if (importanceValue is < 0.0 or > 1.0)
