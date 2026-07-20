@@ -12,6 +12,22 @@ Versioning notes:
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tool descriptions + `get_help` no longer read as .NET-only** (ADR-028 move 2, PR #27) —
+  the code side of the language-neutral work whose docs side shipped in #26. This is the
+  surface that rides in an AI agent's context *every session*, and it was steering agents to
+  skip CortexPlexus on non-.NET projects and to use a deprecated scoping path.
+  - `get_help`'s tool count is now **reflected from the assembly** instead of hardcoded — the
+    header said "30 tools" while the real count had drifted to 34. Two drift-guard tests pin
+    it, so it cannot rot again.
+  - Memory examples stop teaching the pre-v0.8.3 `scopeId: "<repoId>"` path; they now use
+    `repository: "<name>"`.
+  - `OnboardProject`'s description claimed it returned NuGet packages, which it never
+    fetched; FQN parameters now show Python/Go conventions alongside C#;
+    `GetEntityMapping`/`GetMiddlewarePipeline` self-declare "C#/.NET only"; `GetNuGetAudit`
+    is marked deprecated in favour of `GetDependencyAudit(ecosystem: "nuget")`.
+
 ## [0.9.0] — 2026-07-20
 
 ### Docs
