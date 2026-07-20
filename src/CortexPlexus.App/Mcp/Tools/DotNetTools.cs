@@ -68,7 +68,7 @@ public sealed class DotNetTools
         return sb.ToString();
     }
 
-    [McpServerTool, Description("Get EF Core entity mappings (DbContext → DbSet → Entity)")]
+    [McpServerTool, Description("Get EF Core entity mappings (DbContext → DbSet → Entity). C#/.NET only — for other stacks, entities aren't modeled this way.")]
     public static async Task<string> GetEntityMapping(
         [Description("Filter by entity name (optional)")] string? entityName = null,
         [Description("Repository name to scope results (optional)")] string? repository = null,
@@ -191,7 +191,9 @@ public sealed class DotNetTools
         return sb.ToString();
     }
 
-    [McpServerTool, Description("Audit NuGet packages — list dependencies with versions")]
+    [McpServerTool, Description(
+        "DEPRECATED — use GetDependencyAudit(ecosystem: \"nuget\") instead, which covers .NET " +
+        "plus npm/pip/go/cargo/composer/maven. Audits NuGet packages — lists dependencies with versions.")]
     public static string GetNuGetAudit(
         [Description("Path to project or directory to audit")] string? path = null)
     {
@@ -349,7 +351,7 @@ public sealed class DotNetTools
 
     [McpServerTool, Description(
         "Get the ASP.NET middleware pipeline order. Shows the sequence of app.UseXxx() middleware calls " +
-        "and their execution order.")]
+        "and their execution order. C#/.NET only.")]
     public static async Task<string> GetMiddlewarePipeline(
         [Description("Repository name to scan")] string? repository = null,
         IGraphStore graphStore = default!,

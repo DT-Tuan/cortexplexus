@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Linq;
+using System.Reflection;
 using ModelContextProtocol.Server;
 
 namespace CortexPlexus.App.Mcp.Tools;
@@ -63,7 +65,7 @@ public sealed class HelpTools
         RecallMemory to persist context across sessions (see GetHelp("memory")).
 
         ## Step 3: Recall prior context (if memory is enabled)
-        → RecallMemory("<topic you're working on>", scope: "project", scopeId: "<repoId>", limit: 5)
+        → RecallMemory("<topic you're working on>", scope: "project", repository: "<repo-name>", limit: 5)
         Read any hits before starting — avoids re-discovering what you already knew.
 
         ## Step 4: Explore
@@ -74,7 +76,10 @@ public sealed class HelpTools
         → IndexFromLocal("/path/to/project")        # code already on server
         → IndexFromGit("https://github.com/...")     # clone from Git
 
-        Supported: C# (Roslyn), TypeScript, JavaScript, Python, Java, Go, Rust, PHP
+        Works with any language: TypeScript, JavaScript, Python, Java, Go, Rust, PHP
+        (via Tree-sitter) and C# (deepest tier via Roslyn). Do NOT skip this server
+        because a project isn't .NET — search, call graphs, impact, endpoints, DI,
+        dependency audit, config and test coverage are all multi-language.
         """;
 
     private const string WhenToUse = """
@@ -120,7 +125,7 @@ public sealed class HelpTools
         | Remember a user preference across chats   | SaveMemory(topic:"preference") | Re-ask user next session |
         | Record a non-obvious project convention   | SaveMemory(topic:"pattern", scope:"project") | Keep in conversation only |
         | Note a bug/workaround tied to a symbol    | SaveMemory(topic:"bug", relatedFqns:["X.Y"]) | Comment in chat that's lost at end |
-        | Recall prior context when resuming work   | RecallMemory("auth flow", scope:"project", scopeId:"<repoId>") | Re-read all docs from scratch |
+        | Recall prior context when resuming work   | RecallMemory("auth flow", scope:"project", repository:"<repo-name>") | Re-read all docs from scratch |
         | Audit what you've saved                   | ListMemories()             | — |
         | Correct a wrong/stale memory              | ForgetMemory(id)           | Leave it to pollute recall |
 
@@ -137,9 +142,15 @@ public sealed class HelpTools
         See `GetHelp(topic: "memory")` for the full memory playbook.
         """;
 
-    private const string ToolReference = """
-        # Tool Reference (30 tools)
+    /// <summary>Number of MCP tools, counted from the assembly so the help text can never
+    /// drift from reality (the old hardcoded "30 tools" was stale at 34). ADR-028.</summary>
+    private static readonly int ToolCount = typeof(HelpTools).Assembly.GetTypes()
+        .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+        .Count(m => m.GetCustomAttributes(typeof(McpServerToolAttribute), inherit: false).Length > 0);
 
+    private static string ToolReference => $"# Tool Reference ({ToolCount} tools)\n\n{ToolReferenceBody}";
+
+    private const string ToolReferenceBody = """
         ## INDEXING (do this first)
         - ActivateAgent(projectPath, projectName?)
           Install + start local indexing agent. Source never leaves your machine.
@@ -175,7 +186,7 @@ public sealed class HelpTools
         - SemanticSearch(query, repository?, limit?, expand?)
           Vector + BM25 hybrid. Use for natural language queries.
           Example: SemanticSearch("authentication and authorization logic")
-          Tip: expand=true uses Ollama LLM for better recall (+2s latency)
+          Tip: expand=true runs LLM query expansion (HyDE/multi-query) for better recall (+~2s latency)
 
         ## GRAPH TRAVERSAL
         - GetCallers(methodFqn, depth?)         — Who calls this? (depth 1-5)
@@ -212,13 +223,13 @@ public sealed class HelpTools
 
         ## AGENT MEMORY (opt-in — requires Memory__Enabled=true)
         Semantic, scoped, auto-decaying memory store. See docs/MEMORY-SYSTEM.md.
-        - SaveMemory(content, scope, scopeId?, topic?, importance?, relatedFqns?)
+        - SaveMemory(content, scope, repository?, topic?, importance?, relatedFqns?)
           Store a memory. Scope: session|project|global. Topic shapes decay.
-          Example: SaveMemory("Team prefers async/await", scope: "project", scopeId: "<repoId>", topic: "preference")
-        - RecallMemory(query, scope?, scopeId?, topic?, relatedFqn?, limit?)
+          Example: SaveMemory("Team prefers async/await", scope: "project", repository: "<repo-name>", topic: "preference")
+        - RecallMemory(query, scope?, repository?, topic?, relatedFqn?, limit?)
           Semantic recall with decay-weighted ranking.
-          Example: RecallMemory("auth patterns", scope: "project", scopeId: "<repoId>")
-        - ListMemories(scope?, scopeId?, topic?, limit?)
+          Example: RecallMemory("auth patterns", scope: "project", repository: "<repo-name>")
+        - ListMemories(scope?, repository?, topic?, limit?)
           Audit all saved memories (no semantic search; includes near-forgotten).
         - ForgetMemory(id)  — Delete a specific memory by UUID.
         """;
@@ -298,13 +309,13 @@ public sealed class HelpTools
 
         1. At session start: after ListRepositories(), call RecallMemory with the topic
            you're about to work on. Example:
-             RecallMemory("auth middleware", scope: "project", scopeId: "<repoId>", limit: 5)
+             RecallMemory("auth middleware", scope: "project", repository: "<repo-name>", limit: 5)
            This gives you prior context before you start re-exploring the codebase.
 
         2. During work: if the user states a preference ("we always use X here") or you
            discover a non-obvious project convention, save it:
              SaveMemory("Team prefers result-type error handling over exceptions",
-                        scope: "project", scopeId: "<repoId>", topic: "preference")
+                        scope: "project", repository: "<repo-name>", topic: "preference")
 
         3. At end of session: if you learned something the next agent session would waste
            time re-discovering, save it. Otherwise don't.
@@ -330,13 +341,14 @@ public sealed class HelpTools
 
         ## The 3 scopes — pick the right one
 
-        | Scope     | scope_id                          | When to use                                      |
+        | Scope     | how to address it                 | When to use                                      |
         |-----------|-----------------------------------|--------------------------------------------------|
-        | `session` | client-supplied session UUID      | State that should die when the chat ends         |
-        | `project` | repository UUID (from ListRepos)  | Default for codebase-specific things (80% case)  |
-        | `global`  | null                              | Rare: user-wide preferences across all projects  |
+        | `session` | scopeId = client session UUID     | State that should die when the chat ends         |
+        | `project` | **repository = repo NAME** (preferred; scopeId UUID also works) | Default for codebase-specific things (80% case)  |
+        | `global`  | (nothing)                         | Rare: user-wide preferences across all projects  |
 
-        Rule: default to `project` with the current repo's id. Only use `global`
+        Rule: default to `project` and pass `repository: "<name>"` (the server resolves
+        the name → id for you, v0.8.3+ — no need to look up a UUID). Only use `global`
         for user-wide truths. Only use `session` for truly transient state.
 
         ## The 6 topics — pick the right one (shapes decay)
@@ -366,7 +378,7 @@ public sealed class HelpTools
         ```
         1. ListRepositories()   → get repoId for your project, verify Memory: enabled
         2. RecallMemory(query: "<what you're about to work on>",
-                        scope: "project", scopeId: "<repoId>", limit: 5)
+                        scope: "project", repository: "<repo-name>", limit: 5)
         3. If hits: read them BEFORE running search_code / explore_topic.
            You might avoid re-discovering something you already knew.
         4. Do your work.
@@ -382,7 +394,7 @@ public sealed class HelpTools
           SaveMemory(
             content: "Team prefers Result<T> over exceptions for domain errors",
             scope: "project",
-            scopeId: "<current repoId>",
+            repository: "<repo-name>",
             topic: "preference",
             importance: 0.8)
 
@@ -396,7 +408,7 @@ public sealed class HelpTools
           SaveMemory(
             content: "Race condition on retry — fixed in PR #42 by adding mutex on _retryLock",
             scope: "project",
-            scopeId: "<repoId>",
+            repository: "<repo-name>",
             topic: "bug",
             relatedFqns: ["App.Payments.PaymentProcessor.ProcessAsync"])
 
@@ -431,13 +443,13 @@ public sealed class HelpTools
 
         ## The 4 tools (one-line each)
 
-        - SaveMemory(content, scope, scopeId?, topic?, importance?, relatedFqns?)
+        - SaveMemory(content, scope, repository?, topic?, importance?, relatedFqns?)
           Stores a new memory after PII scan.
 
-        - RecallMemory(query, scope?, scopeId?, topic?, relatedFqn?, limit?)
+        - RecallMemory(query, scope?, repository?, topic?, relatedFqn?, limit?)
           Semantic + decay-ranked retrieval. Bumps access counter on hits.
 
-        - ListMemories(scope?, scopeId?, topic?, limit?)
+        - ListMemories(scope?, repository?, topic?, limit?)
           Pure filter — no embedding cost. For audit / management.
 
         - ForgetMemory(id)
