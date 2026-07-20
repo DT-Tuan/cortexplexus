@@ -30,6 +30,10 @@ public sealed class MemoryToolsTests
     {
         var s = Substitute.For<ISecretsScanner>();
         s.ContainsSecrets(Arg.Any<string>()).Returns(containsSecrets);
+        // Must be stubbed in step with ContainsSecrets: NSubstitute auto-returns ""
+        // (not null) for unstubbed string members, so a DetectSecret-driven code path
+        // would read as "secret found" on every input.
+        s.DetectSecret(Arg.Any<string>()).Returns(containsSecrets ? "'api_key' assigned a value" : null);
         s.Sanitize(Arg.Any<string>()).Returns(ci => ci.Arg<string>());
         return s;
     }
@@ -101,6 +105,8 @@ public sealed class MemoryToolsTests
             options: Opts(true));
 
         Assert.Contains("secrets or credentials", result);
+        // #30: the rejection must name what tripped it, or callers rewrite blindly.
+        Assert.Contains("api_key", result);
     }
 
     [Fact]

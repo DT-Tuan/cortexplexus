@@ -23,8 +23,10 @@ public sealed class SecretsScannerSupplementTests
     [InlineData("api_key=xyz", true, "api_key snake")]
     [InlineData("api-key:value", true, "api-key kebab")]
     [InlineData("auth_token=abc", true, "auth_token")]
-    [InlineData("Bearer abc", true, "bearer keyword anywhere")]
-    [InlineData("private_key.pem", true, "private_key")]
+    // #30: these two flipped to false. A keyword must be adjacent to a VALUE to count —
+    // "Bearer abc" is prose with no token shape, "private_key.pem" names a file.
+    [InlineData("Bearer abc", false, "bare keyword, no token-shaped value")]
+    [InlineData("private_key.pem", false, "filename mention, no assigned value")]
     [InlineData("publicData = 1", false, "no sensitive keyword")]
     public void ContainsSecrets_KeywordVariants(string content, bool expected, string reason)
     {
