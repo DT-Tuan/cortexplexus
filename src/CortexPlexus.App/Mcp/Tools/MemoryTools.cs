@@ -75,11 +75,19 @@ public sealed class MemoryTools
         // Name the trigger. The old message ("contains secrets — sanitize before saving")
         // gave callers nothing to act on, so agents rewrote the same memory repeatedly
         // without ever hitting the one offending token (issue #30).
-        var detected = secrets.DetectSecret(content);
-        if (detected is not null)
-            return $"Error: content appears to contain a credential — detected {detected}. " +
+        //
+        // The GATE stays on ContainsSecrets — DetectSecret only decorates the message.
+        // Gating on `DetectSecret(...) is not null` looks equivalent but is not: test
+        // doubles return "" rather than null for unstubbed string members, which turns
+        // the gate permanently on.
+        if (secrets.ContainsSecrets(content))
+        {
+            var detected = secrets.DetectSecret(content);
+            var what = string.IsNullOrWhiteSpace(detected) ? "a credential pattern" : detected;
+            return $"Error: content appears to contain secrets or credentials — detected {what}. " +
                    "Remove or redact the VALUE and retry. Prose that merely discusses credentials " +
                    "(\"use an Authorization: Bearer header\", \"the private_key field must never be logged\") is allowed.";
+        }
 
         var importanceValue = importance ?? options.Value.DefaultImportance;
         if (importanceValue is < 0.0 or > 1.0)

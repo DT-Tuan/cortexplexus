@@ -1,0 +1,16 @@
+# CortexPlexus indexing exclusion rules
+# Minimal — this repo has zero markdown noise (all docs/*.md are ADRs, runbooks,
+# architecture). Only block per-dev session dumps and local backup.
+
+# Per-developer Claude Code session state, skills, memory
+.claude
+
+# Local git backup snapshots (large, not source)
+.git-backup
+
+# Personal deploy helper (not for upstream)
+deploy.sh
+
+# Internal-only planning docs (also gitignored from upstream)
+SPEC.md
+PROJECT-SPEC.md

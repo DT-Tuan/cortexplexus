@@ -82,6 +82,25 @@ public sealed class SecretsScannerTests
         Assert.Null(_scanner.DetectSecret(content));
     }
 
+    // Bypass guards. Relaxing the keyword gate (#30) must not open a hole the OLD
+    // bare-substring check would have closed — every case below was found by an
+    // adversarial pass over the first draft of the fix and pins a real regression.
+    [Theory]
+    [InlineData("{\"password\": \"P@ssw0rd!\"}", "quoted JSON key — the '\"' sits between keyword and ':'")]
+    [InlineData("{\"api_key\": \"my-custom-service-key-99\"}", "quoted JSON key, no well-known issuer prefix")]
+    [InlineData("mysql -u root --password Winter2024!", "CLI long option binds by whitespace")]
+    [InlineData("password=42", "short value still a value")]
+    [InlineData("password=\"a b\"", "quoted value containing a space")]
+    [InlineData("Authorization: Bearer myapptoken-v2-deadbeefcafe", "opaque token starting with an alpha run")]
+    [InlineData("Authorization: Bearer SuperSecretTokenXX", "pure-alphabetic token >= 16")]
+    [InlineData("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAxxxx", "PEM block, no keyword at all")]
+    [InlineData("Server=localhost;User Id=sa;Pwd=SuperSecret1", "connection string using Pwd= not Password=")]
+    public void ContainsSecrets_ClosesBypasses(string content, string reason)
+    {
+        _ = reason;
+        Assert.True(_scanner.ContainsSecrets(content));
+    }
+
     [Fact]
     public void Sanitize_LeavesBearerProseIntact()
     {

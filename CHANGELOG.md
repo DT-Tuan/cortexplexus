@@ -12,6 +12,24 @@ Versioning notes:
 
 ## [Unreleased]
 
+### Fixed
+
+- **Issue [#30](https://github.com/DT-Tuan/cortexplexus/issues/30)** — `save_memory` rejected
+  prose that merely *discusses* credentials. The secrets
+  scanner tested each sensitive keyword as a bare substring, so any memory containing
+  the word `bearer`, `secret`, `api_key` or `private_key` was refused outright regardless of
+  whether a value followed. The blocked class was precisely the credential-handling lessons
+  most worth keeping ("use an Authorization: Bearer header rather than a query parameter"),
+  and the error ("Sanitize before saving") read as "reword it", sending agents into a blind
+  rewrite loop. A keyword now counts only when a value is bound to it (`:`/`=`, optionally
+  through a quote, or a `--flag` form), and rejections name the pattern that tripped.
+  The same fix removes over-redaction on the indexing path: `Sanitize()` shares the bearer
+  regex, so "Authorization: Bearer header" in indexed docs was being rewritten to
+  "[REDACTED_TOKEN]" before embedding.
+  Detection was *tightened* in the same pass, closing holes the old keyword list also had:
+  PEM private-key blocks, `Pwd=` connection strings, quoted JSON credentials
+  (`{"password": "…"}`), and opaque bearer tokens that are not JWTs.
+
 ### Docs
 
 - **First-contact docs are now language-neutral** — the introduction/usage docs led with
