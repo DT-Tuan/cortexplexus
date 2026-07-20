@@ -12,23 +12,7 @@ Versioning notes:
 
 ## [Unreleased]
 
-### Fixed
-
-- **Issue [#30](https://github.com/DT-Tuan/cortexplexus/issues/30)** — `save_memory` rejected
-  prose that merely *discusses* credentials. The secrets
-  scanner tested each sensitive keyword as a bare substring, so any memory containing
-  the word `bearer`, `secret`, `api_key` or `private_key` was refused outright regardless of
-  whether a value followed. The blocked class was precisely the credential-handling lessons
-  most worth keeping ("use an Authorization: Bearer header rather than a query parameter"),
-  and the error ("Sanitize before saving") read as "reword it", sending agents into a blind
-  rewrite loop. A keyword now counts only when a value is bound to it (`:`/`=`, optionally
-  through a quote, or a `--flag` form), and rejections name the pattern that tripped.
-  The same fix removes over-redaction on the indexing path: `Sanitize()` shares the bearer
-  regex, so "Authorization: Bearer header" in indexed docs was being rewritten to
-  "[REDACTED_TOKEN]" before embedding.
-  Detection was *tightened* in the same pass, closing holes the old keyword list also had:
-  PEM private-key blocks, `Pwd=` connection strings, quoted JSON credentials
-  (`{"password": "…"}`), and opaque bearer tokens that are not JWTs.
+## [0.9.0] — 2026-07-20
 
 ### Docs
 
@@ -48,6 +32,24 @@ Versioning notes:
 
 ### Added
 
+- **Embedding-space versioning** (ADR-018, PR #29) — records the embedding space
+  (provider, model, dimensions) wherever vectors are written, and makes every vector read
+  space-aware. Closes a silent-wrongness bug: a Vertex-embedded query was being compared
+  against Ollama document vectors with no warning at all.
+  - `EmbeddingSpace` + `EmbeddingSpaceResolver`; additive idempotent columns
+    (`embedding_provider`/`model`/`dim`) on `repositories` and `agent_memories`. Legacy
+    NULL rows read as "unknown" — non-breaking.
+  - **Write path:** a full re-index stamps the repo's space; an incremental upload into a
+    stamped, space-mismatched repo is refused atomically with a 409 and a recovery message.
+  - **Read path** (invariant: never compare across spaces): single-repo mismatch skips the
+    vector leg; cross-repo filters mismatched repos out of vector ranking; memory recall
+    ranks foreign/unknown-space rows by a neutral 0.5 factor instead of garbage cosine.
+    `list_repositories` shows each repo's embedding line (match / ⚠️ mismatch / unknown).
+  - Hardening from an adversarial finder sweep: vector upsert `COALESCE`s the embedding
+    column so an embedding-less re-upsert preserves the stored vector instead of NULL-wiping
+    it (also fixes pre-existing partial-failure data loss); a new `FullReindex` wire field,
+    distinct from `FullFileSnapshot`, keeps an incremental index from falsely stamping a
+    mixed-space repo as pure.
 - **Vertex AI embedding provider** (ADR-017) — opt-in third provider branch
   (`Embedding:Provider=vertex`) for the tri-cortex deployment, alongside the
   default all-local Ollama and the existing Gemini branch. Moves embedding
@@ -73,6 +75,25 @@ Versioning notes:
 
 ### Fixed
 
+- **Issue [#30](https://github.com/DT-Tuan/cortexplexus/issues/30) — `save_memory` rejected
+  prose that merely *discusses* credentials** (PR #31). The secrets scanner tested each
+  sensitive keyword as a bare substring, so any memory containing the word `bearer`,
+  `secret`, `api_key` or `private_key` was refused outright regardless of whether a value
+  followed. The blocked class was precisely the credential-handling lessons most worth
+  keeping ("use an Authorization: Bearer header rather than a query parameter"), and the
+  error ("Sanitize before saving") read as "reword it", sending agents into a blind rewrite
+  loop.
+  - A keyword now counts only when a value is **bound** to it — `:`/`=` (optionally through
+    a quote, so `{"password": "…"}` is still caught) or a `--flag` form. Whitespace-only
+    binding ("the password is never logged") is deliberately not treated as a credential:
+    it is indistinguishable from the prose this fix exists to unblock.
+  - Rejections now name the matched pattern (`ISecretsScanner.DetectSecret`) instead of an
+    opaque "sanitize before saving".
+  - Same fix removes **over-redaction on the indexing path**: `Sanitize()` shares the bearer
+    regex, so "Authorization: Bearer header" in indexed documentation was being rewritten to
+    "[REDACTED_TOKEN]" before embedding.
+  - Detection was *tightened* in the same pass, closing holes the old keyword list also had:
+    PEM private-key blocks, `Pwd=` connection strings, and opaque (non-JWT) bearer tokens.
 - **Stale-symbol sweep — the graph now forgets deleted files** (PR #28; bug
   filed from CortexFlow 2026-07-10). Symbols of deleted source files were
   served forever at score 1.0 — upsert-by-FQN never revisits a file that no
@@ -114,8 +135,8 @@ Versioning notes:
 - Switching a repo to Vertex requires a **full re-embed** (different vector
   space than Ollama `nomic-embed-text`, even though both are 768-dim). The OSS
   all-local default (`Provider=ollama`) and the Gemini branch are unchanged.
-- **Local Agent 1.1.0 → 1.2.0** (new wire fields `deletedFiles` /
-  `fullFileSnapshot`, heartbeat endpoint — backward compatible in both
+- **Local Agent 1.1.0 → 1.2.1** (new wire fields `deletedFiles` /
+  `fullFileSnapshot` / `fullReindex`, heartbeat endpoint — backward compatible in both
   directions). After deploying the server, run `cortexplexus-agent update` and
   restart watch units: the first full index per repo **auto-repairs existing
   stale graphs** via the snapshot sweep — no `DeleteRepository` needed.
@@ -408,7 +429,8 @@ Initial public release.
 - 693 tests passing (~85% coverage).
 - GitHub Release: agent tarballs for linux-x64 / win-x64 / osx-x64 + SHA256SUMS.
 
-[Unreleased]: https://github.com/DT-Tuan/cortexplexus/compare/v0.8.4...HEAD
+[Unreleased]: https://github.com/DT-Tuan/cortexplexus/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/DT-Tuan/cortexplexus/compare/v0.8.4...v0.9.0
 [0.8.4]: https://github.com/DT-Tuan/cortexplexus/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/DT-Tuan/cortexplexus/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/DT-Tuan/cortexplexus/compare/v0.8.1...v0.8.2
