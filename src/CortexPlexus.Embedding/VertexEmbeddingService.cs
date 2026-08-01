@@ -122,10 +122,17 @@ public sealed class VertexEmbeddingService(
             ? "aiplatform.googleapis.com"
             : $"{location}-aiplatform.googleapis.com";
 
-        var apiKey = !string.IsNullOrWhiteSpace(_options.VertexApiKey) ? _options.VertexApiKey : _options.ApiKey;
+        var url = $"https://{host}/v1/projects/{_options.VertexProjectId}/locations/{location}" +
+                  $"/publishers/google/models/{_options.VertexModelId}:predict";
 
-        return $"https://{host}/v1/projects/{_options.VertexProjectId}/locations/{location}" +
-               $"/publishers/google/models/{_options.VertexModelId}:predict?key={apiKey}";
+        // Under OAuth2 the credential travels in an Authorization header stamped
+        // by VertexAuthHandler (ADR-029), so the URL carries no credential at
+        // all. Everything else about the request is identical — the project-scoped
+        // endpoint accepts this exact shape under either carrier.
+        if (_options.VertexUsesOAuth) return url;
+
+        var apiKey = !string.IsNullOrWhiteSpace(_options.VertexApiKey) ? _options.VertexApiKey : _options.ApiKey;
+        return $"{url}?key={apiKey}";
     }
 
     private static IEnumerable<IList<T>> Chunk<T>(IList<T> source, int size)

@@ -28,5 +28,6 @@
 | [026](026-memory-lifecycle-invalidation.md) | Memory M3 — status lifecycle, invalidation over deletion, archive & export | Proposed | 2026-07-07 |
 | [027](027-memory-code-binding-consolidation.md) | Memory M4+M5 — code-graph drift binding, maintenance report | Proposed | 2026-07-07 |
 | [028](028-language-neutral-adoption-surface.md) | Language-neutral adoption surface — kill the ".NET-only" gestalt, description budget, languages-per-repo | Proposed | 2026-07-07 |
+| [029](029-vertex-oauth2-service-account-auth.md) | Vertex OAuth2 service-account auth — bearer header replaces `?key=`, no re-index | Accepted | 2026-08-01 |
 
 **Vision tiers (VISION.md):** ADRs 018–024, 028 form Tier 1 "Trust & Economy"; ADRs 025–027 are the Memory-v2 track (Tier 1.5/2 — see [MEMORY-V2-ASSESSMENT](../research/MEMORY-V2-ASSESSMENT.md)). Suggested order: **018 (P0 bug) → 024 (incident fix) → 028 (adoption, docs-heavy — parallelizable) → 022 (perf; shares agent-1.2.0 wire bump with 023) → 023 → 021 → 020 → 025 → 026 → 019 (consumes 018/021/023/025) → 027**. Implementation status tracked in [ROADMAP.md](../ROADMAP.md#vision-tier-1--trust--economy-2026h2).

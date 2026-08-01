@@ -12,7 +12,37 @@ Versioning notes:
 
 ## [Unreleased]
 
+### Added
+
+- **Vertex AI OAuth2 service-account auth** (ADR-029) — the Vertex embedding provider can now
+  authenticate with a Google **service account** instead of an express-mode API key. The
+  project-scoped Vertex endpoint rejects query-string credentials outright (`401 UNAUTHENTICATED
+  — "API keys are not supported by this API"`), and express-mode keys can only be minted through
+  the web console, so on an account where you hold just a downloaded key file this is the only
+  route in.
+  - New `Embedding__VertexCredentialPath` — path to a service-account JSON key file. Setting it
+    selects OAuth2; leaving it empty keeps the existing express-mode behaviour, so **no existing
+    deployment needs a config change**. With neither a key nor a path configured, Application
+    Default Credentials are used.
+  - Deploy the key as a **read-only bind mount**, never baked into the image — image layers are
+    immutable, so a credential added in one layer stays recoverable from image history even if a
+    later layer deletes it. See `docker-compose.yml` for the shape.
+  - **No re-index required.** The embedding space stamp `(vertex, text-embedding-005, 768)` is
+    unchanged, and this was verified rather than assumed: the same text embedded through the old
+    key and the new service account returns **bitwise-identical** vectors (cosine 1.000000000000).
+  - The credential is fetched once and cached by `Google.Apis.Auth` (measured 2411 ms first call,
+    383 ms second), so no caching layer is added on top. A *failed* load is deliberately not
+    cached — a bind mount that is not ready at container boot would otherwise poison the process
+    until it restarts.
+
 ### Fixed
+
+- **`VertexLocation` defaulted to `"global"` in `Program.cs`** while `EmbeddingOptions` defaulted
+  to `"us-central1"` (ADR-029). Per the ADR-017 benchmark the global endpoint measures ~11.5 s per
+  `:predict` call vs ~1.55 s regional — a 7.5× regression that drops throughput below even the
+  local Ollama baseline. `docker-compose.yml` sets the variable explicitly, so the deployed path
+  was never affected; a bare or local run without `VERTEX_LOCATION` set silently took the slow
+  endpoint. Both defaults now read `us-central1`.
 
 - **Tool descriptions + `get_help` no longer read as .NET-only** (ADR-028 move 2, PR #27) —
   the code side of the language-neutral work whose docs side shipped in #26. This is the

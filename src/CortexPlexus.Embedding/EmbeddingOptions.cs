@@ -45,8 +45,60 @@ public sealed record EmbeddingOptions
     /// Vertex API key (express-mode, sent on the <c>?key=</c> query string — NOT
     /// OAuth/bearer). Supplied at runtime only (UserSecrets / env var); never
     /// committed. Falls back to <see cref="ApiKey"/> if unset.
+    /// <para>
+    /// Express-mode keys can only be minted through the Vertex AI Studio
+    /// console. On an account where you hold just a downloaded service-account
+    /// key file, leave this empty and set <see cref="VertexCredentialPath"/> —
+    /// see <see cref="VertexUsesOAuth"/> (ADR-029).
+    /// </para>
     /// </summary>
     public string? VertexApiKey { get; set; }
+
+    /// <summary>
+    /// Path to a Google service-account JSON key file, for OAuth2 bearer auth
+    /// (ADR-029). Setting this selects OAuth2 and takes precedence over
+    /// <see cref="VertexApiKey"/>.
+    /// <para>
+    /// Deploy the file as a read-only bind mount and point this at the mount
+    /// path — never bake a credential into a container image, because image
+    /// layers are immutable and the file stays recoverable from image history
+    /// even if a later layer deletes it.
+    /// </para>
+    /// <para>
+    /// Leave empty on an account with an express-mode key (the OSS default), or
+    /// to fall back to Application Default Credentials when no key is
+    /// configured at all — see <see cref="VertexUsesOAuth"/>.
+    /// </para>
+    /// </summary>
+    public string? VertexCredentialPath { get; set; }
+
+    /// <summary>
+    /// True when Vertex should authenticate with an OAuth2 bearer token
+    /// (service account / ADC) instead of an express-mode API key on the query
+    /// string. Precedence, in order:
+    /// <list type="number">
+    /// <item><see cref="VertexCredentialPath"/> set ⇒ OAuth2 from that key file.</item>
+    /// <item>else an API key is configured (<see cref="VertexApiKey"/>, or
+    /// <see cref="ApiKey"/> as the legacy fallback) ⇒ express-mode query string.</item>
+    /// <item>else ⇒ OAuth2 via Application Default Credentials
+    /// (<c>GOOGLE_APPLICATION_CREDENTIALS</c>, or the ambient identity inside GCP).</item>
+    /// </list>
+    /// <para>
+    /// The API-key branch sits in the middle deliberately: it keeps every
+    /// existing express-mode deployment working untouched, while an explicit
+    /// credential path still wins for an operator migrating off one.
+    /// </para>
+    /// <para>
+    /// This is the SINGLE source of truth for the auth mode —
+    /// <see cref="VertexEmbeddingService"/> reads it to decide whether to append
+    /// <c>?key=</c>, and <c>ServiceCollectionExtensions</c> reads it to decide
+    /// whether to put <see cref="VertexAuthHandler"/> in the HTTP pipeline. The
+    /// two MUST agree: a bearer header plus a query key is a 400, and neither is a 401.
+    /// </para>
+    /// </summary>
+    public bool VertexUsesOAuth =>
+        !string.IsNullOrWhiteSpace(VertexCredentialPath)
+        || (string.IsNullOrWhiteSpace(VertexApiKey) && string.IsNullOrWhiteSpace(ApiKey));
 
     /// <summary>
     /// How many embedding batches to issue in parallel during indexing.

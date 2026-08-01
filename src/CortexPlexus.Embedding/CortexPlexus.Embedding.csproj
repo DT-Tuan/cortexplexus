@@ -9,11 +9,17 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CortexPlexus.Core\CortexPlexus.Core.csproj" />
+    <InternalsVisibleTo Include="CortexPlexus.Embedding.Tests" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Polly" Version="8.*" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.*" />
+    <!-- ADR-029: OAuth2 service-account auth for Vertex. Pinned, not floating:
+         this signs credentials and mints bearer tokens, so a silent minor bump
+         is not something to take unattended. 1.75.0 is the version the
+         CortexBridge ADR-027 reference was verified against. -->
+    <PackageReference Include="Google.Apis.Auth" Version="1.75.0" />
   </ItemGroup>
 
 </Project>
