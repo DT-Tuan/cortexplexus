@@ -67,6 +67,13 @@ service-account key file has exactly one route in: an `Authorization` header.
    sudo chown "$USER:1654" ~/.config/gcp/vertex-sa.json      # group-read for the container uid
    ```
 
+   > `.Config.User` reports only the **uid**, and the group is what a `0640` mount turns on.
+   > Read the real pair off a running container instead — `sudo grep -E '^(Uid|Gid):' \
+   > /proc/$(docker inspect -f '{{.State.Pid}}' <container>)/status`. This matters when you
+   > verify: `docker run -u 1654 …` gives the process **gid 0**, not 1654, so a correctly-mounted
+   > key reads back `Permission denied` and you "fix" a problem you never had. Use
+   > `-u 1654:1654`.
+
 2. **Mount it read-only** in `docker-compose.override.yml` (deployment-specific, so it does not
    belong in the committed compose file):
 
