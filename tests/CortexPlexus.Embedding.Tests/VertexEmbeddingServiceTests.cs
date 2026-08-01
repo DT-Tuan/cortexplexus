@@ -239,4 +239,183 @@ public class VertexEmbeddingServiceTests
         var dim = doc.RootElement.GetProperty("parameters").GetProperty("outputDimensionality").GetInt32();
         Assert.Equal(768, dim);
     }
+
+    // ======================================================================
+    // ADR-029 — OAuth2 service-account auth
+    // ======================================================================
+
+    // === Auth-mode precedence: an explicit credential path wins over a key ===
+    [Fact]
+    public void VertexUsesOAuth_CredentialPathSet_WinsOverApiKey()
+    {
+        var opts = VertexOptions(o =>
+        {
+            o.VertexApiKey = "express-key";
+            o.ApiKey = "gemini-key";
+            o.VertexCredentialPath = "/etc/gcp/sa.json";
+        });
+
+        Assert.True(opts.VertexUsesOAuth);
+    }
+
+    // === Auth-mode precedence: an express key still selects query-string auth,
+    // so existing express-mode deployments keep working untouched ===
+    [Fact]
+    public void VertexUsesOAuth_ApiKeyOnly_StaysExpressMode()
+    {
+        Assert.False(VertexOptions(o => o.VertexCredentialPath = null).VertexUsesOAuth);
+    }
+
+    // === The legacy VertexApiKey ⇒ ApiKey fallback also selects express mode:
+    // the URL builder reads ApiKey when VertexApiKey is blank, so the predicate
+    // must agree or the request would carry no credential at all ===
+    [Fact]
+    public void VertexUsesOAuth_GeminiApiKeyFallbackOnly_StaysExpressMode()
+    {
+        var opts = VertexOptions(o =>
+        {
+            o.VertexApiKey = null;
+            o.ApiKey = "gemini-key";
+        });
+
+        Assert.False(opts.VertexUsesOAuth);
+    }
+
+    // === No credential of any kind ⇒ Application Default Credentials ===
+    [Fact]
+    public void VertexUsesOAuth_NoCredentialConfigured_FallsBackToAdc()
+    {
+        var opts = VertexOptions(o =>
+        {
+            o.VertexApiKey = null;
+            o.ApiKey = null;
+            o.VertexCredentialPath = null;
+        });
+
+        Assert.True(opts.VertexUsesOAuth);
+    }
+
+    // === Whitespace is not a credential — a blank-but-present env var must not
+    // silently select express mode and send "?key= " ===
+    [Fact]
+    public void VertexUsesOAuth_WhitespaceApiKey_TreatedAsAbsent()
+    {
+        var opts = VertexOptions(o =>
+        {
+            o.VertexApiKey = "   ";
+            o.ApiKey = "";
+        });
+
+        Assert.True(opts.VertexUsesOAuth);
+    }
+
+    // === OAuth mode: the URL carries NO credential. This is the load-bearing
+    // assertion of the cutover — a leftover ?key= alongside a bearer header is
+    // rejected, and it would also leak the key into access/proxy logs ===
+    [Fact]
+    public async Task EmbedAsync_OAuthMode_UrlHasNoKeyQueryString()
+    {
+        var handler = FakeHttpMessageHandler.Ok(PredictBody(1, 768));
+        var service = BuildService(handler, VertexOptions(o =>
+        {
+            o.VertexApiKey = null;
+            o.ApiKey = null;
+            o.VertexCredentialPath = "/etc/gcp/sa.json";
+            o.VertexLocation = "us-central1";
+        }));
+
+        await service.EmbedAsync("x");
+
+        var uri = handler.RequestsReceived[0].RequestUri!;
+        Assert.Equal("", uri.Query);
+        Assert.DoesNotContain("key=", uri.AbsoluteUri);
+        // Everything else about the request shape is unchanged by the carrier.
+        Assert.Equal("us-central1-aiplatform.googleapis.com", uri.Host);
+        Assert.Equal(
+            "/v1/projects/test-project/locations/us-central1/publishers/google/models/text-embedding-005:predict",
+            uri.AbsolutePath);
+    }
+
+    // === The handler stamps Authorization: Bearer on the outgoing request ===
+    [Fact]
+    public async Task VertexAuthHandler_StampsBearerToken()
+    {
+        var inner = FakeHttpMessageHandler.Ok(PredictBody(1, 768));
+        var authHandler = new VertexAuthHandler(_ => Task.FromResult("tok-abc"))
+        {
+            InnerHandler = inner
+        };
+        using var client = new HttpClient(authHandler);
+
+        await client.PostAsync("https://us-central1-aiplatform.googleapis.com/v1/x:predict",
+            new StringContent("{}"));
+
+        var auth = inner.RequestsReceived[0].Headers.Authorization!;
+        Assert.Equal("Bearer", auth.Scheme);
+        Assert.Equal("tok-abc", auth.Parameter);
+    }
+
+    // === A token is fetched per request, not once per handler: the credential
+    // library owns the ~1 h refresh, so caching here would pin an expired token ===
+    [Fact]
+    public async Task VertexAuthHandler_FetchesTokenPerRequest()
+    {
+        var calls = 0;
+        var inner = FakeHttpMessageHandler.Ok(PredictBody(1, 768));
+        var authHandler = new VertexAuthHandler(_ =>
+        {
+            calls++;
+            return Task.FromResult($"tok-{calls}");
+        })
+        { InnerHandler = inner };
+        using var client = new HttpClient(authHandler);
+
+        await client.PostAsync("https://host/v1/x:predict", new StringContent("{}"));
+        await client.PostAsync("https://host/v1/x:predict", new StringContent("{}"));
+
+        Assert.Equal(2, calls);
+        Assert.Equal("tok-2", inner.RequestsReceived[1].Headers.Authorization!.Parameter);
+    }
+
+    // === A failed credential load must NOT be memoised. A bind mount that is
+    // not ready at container boot would otherwise poison the process until it
+    // restarts — the second call here re-reads and reports the NEW failure ===
+    [Fact]
+    public async Task VertexTokenProvider_FailedLoad_IsRetriedNotCached()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"cp-sa-{Guid.NewGuid():N}.json");
+        var provider = new VertexTokenProvider(path);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => provider.GetAccessTokenAsync());
+
+        // The file now exists but is not a service-account key. A cached faulted
+        // task would replay the missing-file error; a real re-read reports a
+        // different one, which is what distinguishes the two.
+        await File.WriteAllTextAsync(path, "{\"type\":\"authorized_user\"}");
+        try
+        {
+            var second = await Record.ExceptionAsync(() => provider.GetAccessTokenAsync());
+
+            Assert.NotNull(second);
+            Assert.IsNotType<FileNotFoundException>(second);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // === Fingerprints are stable, short, and not the token itself ===
+    [Fact]
+    public void TokenFingerprint_IsStableAndDoesNotLeakTheToken()
+    {
+        const string token = "ya29.super-secret-bearer-value";
+
+        var fp = VertexTokenProvider.TokenFingerprint(token);
+
+        Assert.Equal(fp, VertexTokenProvider.TokenFingerprint(token));
+        Assert.NotEqual(fp, VertexTokenProvider.TokenFingerprint(token + "x"));
+        Assert.Equal(8, fp.Length);
+        Assert.DoesNotContain(fp, token);
+    }
 }

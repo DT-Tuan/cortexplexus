@@ -32,7 +32,24 @@ public static class ServiceCollectionExtensions
             client.Timeout = TimeSpan.FromMinutes(10);
         });
 
-        services.AddHttpClient(nameof(VertexEmbeddingService));
+        var vertexHttp = services.AddHttpClient(nameof(VertexEmbeddingService));
+
+        // ADR-029: attach the OAuth2 bearer handler ONLY in OAuth mode. In
+        // express mode there is no service-account identity to mint a token
+        // from, so an unconditional handler would fail every call on an account
+        // that is working today. VertexUsesOAuth is the shared predicate —
+        // VertexEmbeddingService.BuildPredictUrl reads the same property to
+        // decide whether to append ?key=, so the carrier is chosen exactly once.
+        // Gated on the provider too: with the default Ollama provider and no key
+        // configured the predicate is trivially true, and registering a Google
+        // credential loader for a client nobody resolves is misleading.
+        if (options.Provider.Equals("vertex", StringComparison.OrdinalIgnoreCase) && options.VertexUsesOAuth)
+        {
+            var credentialPath = options.VertexCredentialPath;
+            services.AddSingleton(_ => new VertexTokenProvider(credentialPath));
+            vertexHttp.AddHttpMessageHandler(sp =>
+                new VertexAuthHandler(sp.GetRequiredService<VertexTokenProvider>()));
+        }
 
         if (options.Provider.Equals("ollama", StringComparison.OrdinalIgnoreCase))
         {

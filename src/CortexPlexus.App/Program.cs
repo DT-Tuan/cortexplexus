@@ -314,11 +314,19 @@ void ConfigureServices(IServiceCollection services, string[] args, IConfiguratio
         options.OllamaModel = ollamaModel;
 
         // Vertex AI provider (ADR-017) — opt-in; only consulted when Provider=="vertex".
-        // API key is runtime-only (UserSecrets / Embedding__VertexApiKey env), never committed.
+        // Credentials are runtime-only (UserSecrets / env), never committed: either an
+        // express-mode key in Embedding__VertexApiKey, or — on a service-account
+        // identity — a key-file path in Embedding__VertexCredentialPath (ADR-029).
         options.VertexProjectId = EmbedCfg("VertexProjectId", "Embedding__VertexProjectId");
-        options.VertexLocation = EmbedCfg("VertexLocation", "Embedding__VertexLocation") ?? "global";
+        // "us-central1", NOT "global": the global endpoint measures ~11.5 s per
+        // :predict call vs ~1.55 s regional (ADR-017 benchmark), which drops
+        // throughput below even the local Ollama baseline. This default used to
+        // disagree with EmbeddingOptions.VertexLocation, so a run that did not set
+        // the env var silently took the slow endpoint.
+        options.VertexLocation = EmbedCfg("VertexLocation", "Embedding__VertexLocation") ?? "us-central1";
         options.VertexModelId = EmbedCfg("VertexModelId", "Embedding__VertexModelId") ?? "text-embedding-005";
         options.VertexApiKey = EmbedCfg("VertexApiKey", "Embedding__VertexApiKey");
+        options.VertexCredentialPath = EmbedCfg("VertexCredentialPath", "Embedding__VertexCredentialPath");
         if (int.TryParse(EmbedCfg("VertexInstancesPerCall", "Embedding__VertexInstancesPerCall"), out var ipc))
             options.VertexInstancesPerCall = ipc;
     });

@@ -152,4 +152,54 @@ public class ServiceCollectionExtensionsTests
         Assert.Equal(1, first);
         Assert.Equal(1, second);
     }
+
+    // ======================================================================
+    // ADR-029 — the OAuth2 token provider is registered only where it is used
+    // ======================================================================
+
+    [Fact]
+    public void Vertex_WithCredentialPath_RegistersTokenProvider()
+    {
+        var services = new ServiceCollection();
+        services.AddCortexPlexusEmbedding(o =>
+        {
+            o.Provider = "vertex";
+            o.VertexProjectId = "p";
+            o.VertexCredentialPath = "/etc/gcp/sa.json";
+        });
+        var sp = services.BuildServiceProvider();
+
+        Assert.NotNull(sp.GetService<VertexTokenProvider>());
+    }
+
+    [Fact]
+    public void Vertex_WithExpressApiKey_DoesNotRegisterTokenProvider()
+    {
+        // Express mode has no service-account identity to mint a token from, so
+        // an OAuth handler in the pipeline would fail every call on an account
+        // that works today.
+        var services = new ServiceCollection();
+        services.AddCortexPlexusEmbedding(o =>
+        {
+            o.Provider = "vertex";
+            o.VertexProjectId = "p";
+            o.VertexApiKey = "k";
+        });
+        var sp = services.BuildServiceProvider();
+
+        Assert.Null(sp.GetService<VertexTokenProvider>());
+    }
+
+    [Fact]
+    public void Ollama_DoesNotRegisterTokenProvider_EvenWithNoKeyConfigured()
+    {
+        // With no credential of any kind the OAuth predicate is trivially true,
+        // so the registration is gated on the provider as well — a Google
+        // credential loader for a client nobody resolves is misleading.
+        var services = new ServiceCollection();
+        services.AddCortexPlexusEmbedding(o => o.Provider = "ollama");
+        var sp = services.BuildServiceProvider();
+
+        Assert.Null(sp.GetService<VertexTokenProvider>());
+    }
 }
