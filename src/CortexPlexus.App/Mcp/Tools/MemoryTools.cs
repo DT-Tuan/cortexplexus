@@ -95,17 +95,35 @@ public sealed class MemoryTools
         if (importanceValue is < 0.0 or > 1.0)
             return $"Error: importance must be in [0, 1], got {importanceValue}.";
 
+        // Abort the save when no vector was produced — without an embedding the memory
+        // is not semantically recall-able, which is the whole point. User should fix the
+        // provider and retry.
+        //
+        // The EMPTY check is the load-bearing one, not the catch. Every IEmbeddingService
+        // implementation swallows its errors and returns an empty float[] rather than
+        // throwing (see VertexEmbeddingService / GeminiEmbeddingService / Ollama), so a
+        // provider outage arrives here as Length == 0 and the catch never fires. Before
+        // this guard existed, that empty array reached Npgsql as a 0-dimension Vector and
+        // save_memory died with an unhandled exception instead of this message — observed
+        // live 2026-08-14 during a GCP billing lapse.
         float[]? embedding;
+        string? embedFailure = null;
         try
         {
             embedding = await embeddings.EmbedAsync(content, ct);
+            if (embedding is null or { Length: 0 })
+                embedFailure = "returned no vector (provider unreachable or rejecting requests)";
         }
         catch (Exception ex)
         {
-            // Abort the save — without an embedding the memory is not semantically
-            // recall-able, which is the whole point. User should fix the provider and retry.
-            return $"Error: embedding service failed ({ex.Message}). Memory NOT saved. " +
-                   "Check the embedding provider (Ollama reachable? Gemini API key?) and retry.";
+            embedding = null;
+            embedFailure = ex.Message;
+        }
+
+        if (embedFailure is not null)
+        {
+            return $"Error: embedding service failed ({embedFailure}). Memory NOT saved. " +
+                   "Check the embedding provider (Ollama reachable? API key valid? billing active?) and retry.";
         }
 
         try
@@ -173,14 +191,20 @@ public sealed class MemoryTools
         if (resolvedScopeId.Error is not null) return resolvedScopeId.Error;
         scopeId = resolvedScopeId.ScopeId;
 
+        // Fall back to filter-only recall when no vector is available. As in SaveMemory,
+        // the EMPTY case is the one that actually happens — providers return an empty
+        // float[] on failure rather than throwing — and an empty array passed down becomes
+        // a 0-dimension Vector that Npgsql rejects. Normalising it to null here is what
+        // turns a provider outage into degraded-but-working recall.
         float[]? queryEmbedding;
         try
         {
             queryEmbedding = await embeddings.EmbedAsync(query, ct);
+            if (queryEmbedding is { Length: 0 }) queryEmbedding = null;
         }
         catch
         {
-            queryEmbedding = null; // Fall back to filter-only recall.
+            queryEmbedding = null;
         }
 
         // ADR-018: pass the current space so foreign-space rows rank neutrally. When no
