@@ -37,6 +37,20 @@ Versioning notes:
 
 ### Fixed
 
+- **`save_memory` and `recall_memory` crashed whenever the embedding provider was down** —
+  every `IEmbeddingService` signals failure by returning an **empty** `float[]` rather than
+  throwing, so the `try/catch` guarding both paths never fired. The empty array flowed down to
+  Npgsql, which built a **0-dimension `Vector`** against a `vector(768)` column and threw an
+  unhandled exception — so a provider outage took memory writes and semantic recall down
+  completely instead of degrading. Observed live during a GCP billing lapse (2026-08-14).
+  - `save_memory` now aborts with the intended actionable message ("Memory NOT saved. Check
+    the embedding provider…") instead of an unhandled exception.
+  - `recall_memory` falls back to filter-only ranking, which is what its `catch` always meant to do.
+  - `AgentMemoryStore.SaveAsync`/`RecallAsync` normalise empty → null defensively, so no future
+    caller can reproduce the crash, and an absent vector can no longer be stamped with an
+    ADR-018 embedding space it never had.
+  - Three regression tests, each verified to fail without the fix.
+
 - **`VertexLocation` defaulted to `"global"` in `Program.cs`** while `EmbeddingOptions` defaulted
   to `"us-central1"` (ADR-029). Per the ADR-017 benchmark the global endpoint measures ~11.5 s per
   `:predict` call vs ~1.55 s regional — a 7.5× regression that drops throughput below even the

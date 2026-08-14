@@ -255,6 +255,75 @@ public sealed class AgentMemoryStoreTests(MemoryFixture fixture) : IAsyncLifetim
         // Wave 2 will exercise the semantic-recall path end-to-end.
     }
 
+    // === Empty vector is "no vector", not "a zero-length vector" ===
+    //
+    // Regression for a live incident (2026-08-14): every IEmbeddingService returns an
+    // EMPTY float[] when the provider fails rather than throwing, so a provider outage
+    // reaches this layer as Length == 0. The store checked `is null` only, built a
+    // 0-dimension pgvector Vector against a vector(768) column, and save_memory died
+    // with an unhandled exception for every save until the provider came back.
+
+    [Fact]
+    public async Task SaveAsync_EmptyEmbedding_PersistsWithoutVectorInsteadOfThrowing()
+    {
+        var saved = await _store.SaveAsync(
+            content: "saved while the embedding provider was down",
+            scope: MemoryScope.Global,
+            scopeId: null,
+            topic: null,
+            importance: 0.5,
+            relatedFqns: null,
+            embedding: Array.Empty<float>());
+
+        Assert.NotEqual(Guid.Empty, saved.Id);
+    }
+
+    [Fact]
+    public async Task SaveAsync_EmptyEmbedding_DoesNotStampASpaceItNeverProduced()
+    {
+        // The ADR-018 stamp must describe a vector that exists. Stamping an absent one
+        // would make the row look space-compatible and rank it as if it had a vector.
+        await _store.SaveAsync(
+            content: "no vector, no stamp",
+            scope: MemoryScope.Global,
+            scopeId: null,
+            topic: null,
+            importance: 0.5,
+            relatedFqns: null,
+            embedding: Array.Empty<float>(),
+            embeddingProvider: "vertex",
+            embeddingModel: "text-embedding-005",
+            embeddingDim: 768);
+
+        await using var cmd = _dataSource.CreateCommand(
+            "SELECT embedding IS NULL, embedding_provider IS NULL, embedding_model IS NULL, embedding_dim IS NULL " +
+            "FROM agent_memories WHERE content = 'no vector, no stamp'");
+        await using var r = await cmd.ExecuteReaderAsync();
+        Assert.True(await r.ReadAsync());
+        Assert.True(r.GetBoolean(0), "embedding column should be NULL");
+        Assert.True(r.GetBoolean(1), "embedding_provider should not be stamped");
+        Assert.True(r.GetBoolean(2), "embedding_model should not be stamped");
+        Assert.True(r.GetBoolean(3), "embedding_dim should not be stamped");
+    }
+
+    [Fact]
+    public async Task RecallAsync_EmptyQueryEmbedding_DegradesToFilterOnlyInsteadOfThrowing()
+    {
+        await SeedBasicMemoriesAsync();
+
+        // Same defect on the read path: an empty query vector must mean "rank by decay
+        // only", not "search with a 0-dimension vector".
+        var hits = await _store.RecallAsync(
+            queryEmbedding: Array.Empty<float>(),
+            scope: MemoryScope.Session,
+            scopeId: "session-A",
+            topic: null,
+            relatedFqn: null,
+            limit: 10);
+
+        Assert.Equal(2, hits.Count);
+    }
+
     private async Task SeedBasicMemoriesAsync()
     {
         await _store.SaveAsync("s1a", MemoryScope.Session, "session-A", MemoryTopic.Note, 0.5, null, null);

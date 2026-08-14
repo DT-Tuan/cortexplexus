@@ -52,6 +52,13 @@ public sealed class AgentMemoryStore(
         if (importance is < 0.0 or > 1.0)
             throw new ArgumentException("Importance must be in [0, 1]", nameof(importance));
 
+        // Treat an EMPTY vector exactly like an absent one. Providers signal failure by
+        // returning an empty float[] rather than throwing, so "no vector" reaches this
+        // layer as Length == 0 far more often than as null. Left unnormalised it would
+        // both fabricate an ADR-018 space stamp for a vector that does not exist and,
+        // below, hand Npgsql a 0-dimension Vector against a vector(768) column.
+        if (embedding is { Length: 0 }) embedding = null;
+
         // Only stamp space when a vector was actually produced (ADR-018).
         if (embedding is null)
         {
@@ -116,6 +123,11 @@ public sealed class AgentMemoryStore(
         CancellationToken ct = default)
     {
         limit = Math.Clamp(limit, 1, 50);
+
+        // As in SaveAsync: an empty vector means "the provider produced nothing", not
+        // "here is a zero-length vector to search with". Normalise it to null so recall
+        // degrades to filter-only ranking instead of handing Npgsql a 0-dimension Vector.
+        if (queryEmbedding is { Length: 0 }) queryEmbedding = null;
 
         // Always filter forgotten rows out even if the reaper hasn't run yet.
         var extraWhere = $"{MemoryScoring.ScoreSqlExpression} >= {MemoryScoring.ForgetThreshold.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
